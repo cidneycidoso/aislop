@@ -8,12 +8,10 @@ const DEFAULT_PROMPTS = {
   first_mes: "Focus on setting a strong hook, descriptive actions, and an engaging opening dialogue."
 }
 
-// Safely gather data after validating permissions
 async function checkAndSendInitData(userId: string) {
   const hasCharacters = spindle.permissions.has('characters')
   const hasGeneration = spindle.permissions.has('generation')
 
-  // If permissions are missing, notify the frontend to show a warning
   if (!hasCharacters || !hasGeneration) {
     spindle.sendToFrontend({
       type: 'permission_status',
@@ -26,7 +24,6 @@ async function checkAndSendInitData(userId: string) {
   try {
     const chars = await spindle.characters.list({ limit: 100 }, userId)
     const prompts = await spindle.userStorage.getJson('prompts.json', { fallback: DEFAULT_PROMPTS, userId })
-    
     const activeChat = await spindle.chats.getActive(userId)
     const activeCharId = activeChat ? activeChat.character_id : null
     
@@ -47,10 +44,7 @@ spindle.onFrontendMessage(async (payload, userId) => {
   }
 
   else if (payload.type === 'get_char_text') {
-    if (!spindle.permissions.has('characters')) {
-      spindle.toast.warning("Characters permission is required to fetch character text.")
-      return
-    }
+    if (!spindle.permissions.has('characters')) return
     try {
       const char = await spindle.characters.get(payload.characterId, userId)
       if (char) {
@@ -67,7 +61,9 @@ spindle.onFrontendMessage(async (payload, userId) => {
   else if (payload.type === 'save_prompts') {
     try {
       await spindle.userStorage.setJson('prompts.json', payload.prompts, { userId })
-      spindle.toast.success("Prompts saved!")
+      spindle.toast.success("AI Rewriter instructions updated!")
+      // Sync the new prompts back to the frontend modules
+      spindle.sendToFrontend({ type: 'prompts_updated', prompts: payload.prompts }, userId)
     } catch (err: any) {
       spindle.log.error(`Failed to save prompts: ${err.message}`)
     }
@@ -75,13 +71,13 @@ spindle.onFrontendMessage(async (payload, userId) => {
 
   else if (payload.type === 'generate') {
     if (!spindle.permissions.has('generation')) {
-      spindle.toast.error("Generation permission is required to rewrite text.")
+      spindle.toast.error("Generation permission is required.")
       spindle.sendToFrontend({ type: 'generate_failed' }, userId)
       return
     }
     try {
       const prompts = await spindle.userStorage.getJson('prompts.json', { fallback: DEFAULT_PROMPTS, userId })
-      const sysPrompt = `${prompts.base}\n\nSpecific instructions for this category: ${prompts[payload.category] || ""}`
+      const sysPrompt = `${prompts.base}\n\nCategory guidance:\n${prompts[payload.category] || ""}`
 
       spindle.toast.info("AI is rewriting...")
       
@@ -100,10 +96,7 @@ spindle.onFrontendMessage(async (payload, userId) => {
   }
 
   else if (payload.type === 'apply') {
-    if (!spindle.permissions.has('characters')) {
-      spindle.toast.error("Characters permission is required to update cards.")
-      return
-    }
+    if (!spindle.permissions.has('characters')) return
     try {
       await spindle.characters.update(payload.characterId, { 
         [payload.category]: payload.newText 
