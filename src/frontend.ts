@@ -45,14 +45,8 @@ const module_: SpindleFrontendModule = {
 
     let config: RewriterConfig = defaultConfig();
 
-    // ── Register sidebar node ──
-    const node = ctx.ui.registerSidebarNode({
-      id: "card_rewriter",
-      label: "Card Rewriter",
-      icon: "wand2",
-    });
-
-    const root = node.root;
+    const tab = ctx.ui.registerCharacterEditorTab({ id: "rewriter", title: "AI Rewrite" });
+    const root = tab.root;
     root.style.padding = "12px";
     root.style.display = "flex";
     root.style.flexDirection = "column";
@@ -79,16 +73,6 @@ const module_: SpindleFrontendModule = {
       btn.style.color = primary ? "#fff" : "inherit";
       return btn;
     }
-
-    // ── Character picker ──
-    root.appendChild(label("Select a character"));
-    const characterHost = ctx.dom.createElement("div", {});
-    root.appendChild(characterHost);
-    const characterSelect = ctx.components.mountSelect(characterHost, {
-      value: "",
-      options: [],
-      placeholder: "Choose a character…",
-    });
 
     // ── Category picker ──
     root.appendChild(label("Field to rewrite"));
@@ -252,19 +236,6 @@ const module_: SpindleFrontendModule = {
       renderCategoryView();
     }
 
-    characterSelect.update({
-      onChange: async () => {
-        currentCharacterId = characterSelect.getValue() || null;
-        resultArea.update({ value: "" });
-        acceptBtn.disabled = true;
-        discardBtn.disabled = true;
-        if (currentCharacterId) {
-          await loadCharacter();
-          await loadCategoryInstructions();
-        }
-      },
-    });
-
     categorySelect.update({
       onChange: async () => {
         await loadCategoryInstructions();
@@ -387,26 +358,29 @@ const module_: SpindleFrontendModule = {
       await loadCategoryInstructions();
     }
 
-    // ── Load available characters into the dropdown ──
-    async function loadCharactersList() {
-      try {
-        // Get list of all available characters
-        type GetCharacterResponse = Extract<RewriterResponse, { type: "get_character" }>;
-        // For now, we'll just show the message to select a character
-        characterSelect.update({
-          placeholder: "Click to select a character…",
-        });
-      } catch (err) {
-        console.error("Failed to load characters:", err);
+    tab.onActivate(() => {
+      const state = ctx.ui.characterEditor.getState();
+      if (state.characterId && state.characterId !== currentCharacterId) {
+        currentCharacterId = state.characterId;
+        void loadCharacter();
       }
-    }
+    });
 
-    void init().then(() => loadCharactersList());
+    const cleanupEditorWatch = ctx.ui.characterEditor.onChange((state) => {
+      if (state.characterId && state.characterId !== currentCharacterId) {
+        currentCharacterId = state.characterId;
+        void loadCharacter();
+      }
+    });
+
+    currentCharacterId = ctx.ui.characterEditor.getState().characterId;
+    void init().then(() => loadCharacter());
 
     ctx.ready();
 
     return () => {
-      node.destroy();
+      cleanupEditorWatch();
+      tab.destroy();
     };
   },
 };
