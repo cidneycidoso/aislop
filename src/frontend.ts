@@ -8,6 +8,12 @@ export function setup(ctx: SpindleFrontendContext) {
     iconSvg: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>'
   })
 
+  // Warning element displayed if permissions are missing
+  const permissionWarning = document.createElement('div')
+  permissionWarning.style.cssText = 'display:none; padding:16px; margin:16px; background:rgba(239,68,68,0.1); border:1px solid rgba(239,68,68,0.25); border-radius:var(--lumiverse-radius); color:var(--lumiverse-danger); font-size:13px; line-height:1.5;'
+  tab.root.appendChild(permissionWarning)
+
+  // Layout container for the main application
   const container = document.createElement('div')
   container.style.cssText = 'display:flex;flex-direction:column;gap:16px;padding:16px;'
   tab.root.appendChild(container)
@@ -106,11 +112,41 @@ export function setup(ctx: SpindleFrontendContext) {
   }
   container.appendChild(applyBtn)
 
+  // Listen to permission changes and trigger a reload
+  const handlePermissionChange = () => {
+    ctx.sendToBackend({ type: 'get_init_data' })
+  }
+  const unsubPermissions = ctx.events.on('PERMISSION_CHANGED', handlePermissionChange)
+
   ctx.onBackendMessage((payload: any) => {
+    // Missing permissions detected
+    if (payload.type === 'permission_status') {
+      container.style.display = 'none'
+      permissionWarning.style.display = 'block'
+      
+      const missing = []
+      if (!payload.hasCharacters) missing.push('<strong>Characters</strong>')
+      if (!payload.hasGeneration) missing.push('<strong>Generation</strong>')
+      
+      permissionWarning.innerHTML = `
+        <strong>Permissions Required:</strong><br>
+        This extension needs additional permissions to run. Please go to the <strong>Extensions</strong> settings panel, select this extension, and enable: ${missing.join(' and ')}.
+      `
+      return
+    }
+
+    // Permission check passed, load normal UI
     if (payload.type === 'init_data') {
+      container.style.display = 'flex'
+      permissionWarning.style.display = 'none'
+
       currentPrompts = payload.prompts
       basePromptInput.update({ value: currentPrompts.base })
       selectedChar = payload.activeCharId || (payload.chars[0]?.id ?? '')
+
+      if (charSelect) {
+        charSelect.destroy()
+      }
 
       charSelect = ctx.components.mountSelect(charSlot, {
         value: selectedChar,
@@ -125,6 +161,7 @@ export function setup(ctx: SpindleFrontendContext) {
       })
       if (selectedChar) fetchCurrentText()
     }
+
     if (payload.type === 'char_text_result') {
       currentTextInput.update({ value: payload.text })
       resultInput.update({ value: '' })
@@ -142,7 +179,11 @@ export function setup(ctx: SpindleFrontendContext) {
     }
   })
 
+  // Start the UI
   ctx.sendToBackend({ type: 'get_init_data' })
 
-  return () => tab.destroy()
+  return () => {
+    tab.destroy()
+    unsubPermissions()
+  }
 }
