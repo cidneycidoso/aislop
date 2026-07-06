@@ -1,0 +1,12 @@
+{
+  "version": "1.0.0",
+  "name": "Card Rewriter",
+  "identifier": "card_rewriter",
+  "author": "You",
+  "github": "https://github.com/YOUR_USERNAME/lumiverse-card-rewriter",
+  "homepage": "https://github.com/YOUR_USERNAME/lumiverse-card-rewriter",
+  "description": "Rewrite any field of a character card with an AI, one category at a time, using configurable prompts and any connection profile.",
+  "permissions": ["characters", "generation"],
+  "entry_backend": "dist/backend.js",
+  "entry_frontend": "dist/frontend.js"
+}

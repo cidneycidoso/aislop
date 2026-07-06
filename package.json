@@ -1,0 +1,12 @@
+{
+  "name": "lumiverse-card-rewriter",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "build": "bun build src/backend.ts --outdir dist --target=browser --minify && bun build src/frontend.ts --outdir dist --target=browser --minify"
+  },
+  "devDependencies": {
+    "lumiverse-spindle-types": "^0.5.31",
+    "typescript": "^5.6.0"
+  }
+}
