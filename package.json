@@ -1,0 +1,7 @@
+{
+  "name": "char-rewriter",
+  "version": "1.0.0",
+  "devDependencies": {
+    "lumiverse-spindle-types": "latest"
+  }
+}
