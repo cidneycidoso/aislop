@@ -227,7 +227,8 @@ const module_: SpindleFrontendModule = {
     async function loadCharacter() {
       if (!currentCharacterId) return;
       originalArea.update({ value: "Loading…" });
-      const res = await call<Extract<RewriterResponse, { type: "get_character" }>>>({
+      type GetCharacterResponse = Extract<RewriterResponse, { type: "get_character" }>;
+      const res = await call<GetCharacterResponse>({
         type: "get_character",
         characterId: currentCharacterId,
       });
@@ -277,7 +278,8 @@ const module_: SpindleFrontendModule = {
       statusText.textContent = "Generating…";
       try {
         const connectionId = connectionSelect.getValue() || undefined;
-        const res = await call<Extract<RewriterResponse, { type: "rewrite" }>>({
+        type RewriteResponse = Extract<RewriterResponse, { type: "rewrite" }>;
+        const res = await call<RewriteResponse>({
           type: "rewrite",
           characterId: currentCharacterId,
           category: currentCategory(),
@@ -334,9 +336,11 @@ const module_: SpindleFrontendModule = {
 
     // ── Init ──
     async function init() {
+      type GetConfigResponse = Extract<RewriterResponse, { type: "get_config" }>;
+      type ListConnectionsResponse = Extract<RewriterResponse, { type: "list_connections" }>;
       const [configRes, connectionsRes] = await Promise.all([
-        call<Extract<RewriterResponse, { type: "get_config" }>>({ type: "get_config" }),
-        call<Extract<RewriterResponse, { type: "list_connections" }>>({ type: "list_connections" }),
+        call<GetConfigResponse>({ type: "get_config" }),
+        call<ListConnectionsResponse>({ type: "list_connections" }),
       ]);
       config = configRes.config;
       basePromptArea.update({ value: config.basePrompt });
