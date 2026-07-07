@@ -30,10 +30,20 @@ export function setup(ctx: SpindleFrontendContext) {
     }
   }
 
+  // --- 1. ALWAYS MOUNTED CHARACTER DROPDOWN ---
   const charSlot = document.createElement('div')
   container.appendChild(charSlot)
-  let charSelect: any = null
+  
+  // Mounted instantly with a loading state, ensuring it never disappears
+  const charSelect = ctx.components.mountSelect(charSlot, {
+    value: '',
+    placeholder: "Loading characters...",
+    options: [],
+    onChange: (v) => { selectedChar = v; fetchCurrentText() }
+  })
+  activeMounts.push(charSelect)
 
+  // --- 2. CATEGORY DROPDOWN ---
   const catSlot = document.createElement('div')
   container.appendChild(catSlot)
   const catSelect = ctx.components.mountSelect(catSlot, {
@@ -49,7 +59,7 @@ export function setup(ctx: SpindleFrontendContext) {
   })
   activeMounts.push(catSelect)
 
-  // Prompts Section - Self-contained directly in the tab
+  // --- 3. PROMPTS CONFIGURATION ---
   const promptSlot = document.createElement('div')
   container.appendChild(promptSlot)
   const promptSection = ctx.components.mountCollapsibleSection(promptSlot, {
@@ -70,6 +80,7 @@ export function setup(ctx: SpindleFrontendContext) {
   savePromptsBtn.onclick = () => ctx.sendToBackend({ type: 'save_prompts', prompts: currentPrompts })
   promptSection.body.appendChild(savePromptsBtn)
 
+  // --- 4. CURRENT TEXT VIEWER ---
   const currentTextLabel = document.createElement('div')
   currentTextLabel.style.cssText = 'font-weight: 500; font-size: 13px; color: var(--lumiverse-text-dim); margin-bottom: -8px;'
   currentTextLabel.textContent = "Current Character Card Text:"
@@ -82,6 +93,7 @@ export function setup(ctx: SpindleFrontendContext) {
   })
   activeMounts.push(currentTextInput)
 
+  // --- 5. GENERATE BUTTON ---
   const generateBtn = document.createElement('button')
   generateBtn.textContent = 'Rewrite with AI'
   generateBtn.className = 'btn'
@@ -99,6 +111,7 @@ export function setup(ctx: SpindleFrontendContext) {
   }
   container.appendChild(generateBtn)
 
+  // --- 6. AI RESULT VIEWER ---
   const resultSlot = document.createElement('div')
   container.appendChild(resultSlot)
   const resultInput = ctx.components.mountTextArea(resultSlot, {
@@ -106,6 +119,7 @@ export function setup(ctx: SpindleFrontendContext) {
   })
   activeMounts.push(resultInput)
 
+  // --- 7. APPLY BUTTON ---
   const applyBtn = document.createElement('button')
   applyBtn.textContent = 'Apply to Character Card'
   applyBtn.className = 'btn'
@@ -118,23 +132,22 @@ export function setup(ctx: SpindleFrontendContext) {
   }
   container.appendChild(applyBtn)
 
+  // --- EVENT LISTENERS ---
   const unsubPermissions = ctx.events.on('PERMISSION_CHANGED', () => {
-    ctx.sendToBackend({ type: 'get_init_data' })
+    requestInitData()
   })
 
   ctx.onBackendMessage((payload: any) => {
     if (payload.type === 'permission_status') {
       container.style.display = 'none'
       permissionWarning.style.display = 'block'
-      
-      const missing = []
-      if (!payload.hasCharacters) missing.push('<strong>Characters</strong>')
-      if (!payload.hasGeneration) missing.push('<strong>Generation</strong>')
-      
-      permissionWarning.innerHTML = `
-        <strong>Permissions Required:</strong><br>
-        This extension needs permission access to run. Please go to your Extensions settings or run the developer script to grant: ${missing.join(' and ')}.
-      `
+      permissionWarning.innerHTML = `<strong>Permissions Required.</strong> Please enable Characters and Generation access.`
+      return
+    }
+
+    if (payload.type === 'init_error') {
+      charSelect.update({ placeholder: "Error loading characters", options: [] })
+      currentTextInput.update({ value: `Backend error: ${payload.error}` })
       return
     }
 
@@ -145,13 +158,11 @@ export function setup(ctx: SpindleFrontendContext) {
       currentPrompts = payload.prompts
       basePromptInput.update({ value: currentPrompts.base })
 
+      // Auto-select the character from the site, or fallback to the first in list
       selectedChar = payload.activeCharId || (payload.chars[0]?.id ?? '')
 
-      if (charSelect) {
-        charSelect.destroy()
-      }
-
-      charSelect = ctx.components.mountSelect(charSlot, {
+      // Update the dropdown we rendered earlier with the real data
+      charSelect.update({
         value: selectedChar,
         placeholder: "Select Character",
         searchPlaceholder: "Search...",
@@ -159,10 +170,10 @@ export function setup(ctx: SpindleFrontendContext) {
           value: c.id,
           label: c.name,
           leading: c.image_id ? { type: 'image', src: `/api/v1/images/${c.image_id}?size=sm` } : undefined
-        })),
-        onChange: (v) => { selectedChar = v; fetchCurrentText() }
+        }))
       })
-      activeMounts.push(charSelect)
+
+      // Fetch the actual text for the selected character immediately
       if (selectedChar) fetchCurrentText()
     }
 
@@ -176,19 +187,30 @@ export function setup(ctx: SpindleFrontendContext) {
       resultInput.update({ value: '' })
       applyBtn.style.display = 'none'
     }
+    
     if (payload.type === 'generate_result') {
       generateBtn.textContent = 'Rewrite with AI'
       generateBtn.disabled = false
       resultInput.update({ value: payload.result })
       applyBtn.style.display = 'block'
     }
+    
     if (payload.type === 'generate_failed') {
       generateBtn.textContent = 'Rewrite with AI'
       generateBtn.disabled = false
     }
   })
 
-  ctx.sendToBackend({ type: 'get_init_data' })
+  // Smart URL parser to tell the backend what you're looking at
+  function requestInitData() {
+    const match = window.location.hash.match(/\/(characters|chat)\/([a-zA-Z0-9_-]+)/)
+    const routeType = match ? match[1] : null
+    const routeId = match ? match[2] : null
+    ctx.sendToBackend({ type: 'get_init_data', routeType, routeId })
+  }
+
+  // Start initialization
+  requestInitData()
 
   return () => {
     tab.destroy()
