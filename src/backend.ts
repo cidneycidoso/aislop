@@ -12,6 +12,7 @@ const DEFAULT_PROMPTS = {
 async function checkAndSendInitData(userId: string, routeType?: string | null, routeId?: string | null) {
   const hasCharacters = spindle.permissions.has('characters')
   const hasGeneration = spindle.permissions.has('generation')
+  const hasChats = spindle.permissions.has('chats') // Check if we have chat permissions [2.4.1]
 
   if (!hasCharacters || !hasGeneration) {
     spindle.sendToFrontend({ type: 'permission_status', hasCharacters, hasGeneration }, userId)
@@ -19,23 +20,30 @@ async function checkAndSendInitData(userId: string, routeType?: string | null, r
   }
 
   try {
-    // 1. Fetch character list (pass userId to ensure database scope is correct)
     const chars = await spindle.characters.list({ limit: 200, userId }, userId)
     const prompts = await spindle.userStorage.getJson('prompts.json', { fallback: DEFAULT_PROMPTS, userId })
     
-    // 2. Smart auto-detect active character based on what you are looking at
+    // Auto-detect active character based on what you are looking at
     let activeCharId = null
     if (routeType === 'characters' && routeId) {
       activeCharId = routeId // You are on a character card page
-    } else if (routeType === 'chat' && routeId) {
-      const chat = await spindle.chats.get(routeId, userId)
-      if (chat) activeCharId = chat.character_id // You are in a specific chat
+    } else if (routeType === 'chat' && routeId && hasChats) {
+      try {
+        const chat = await spindle.chats.get(routeId, userId)
+        if (chat) activeCharId = chat.character_id // You are in a specific chat
+      } catch (err: any) {
+        spindle.log.error(`Auto-detect chat error: ${err.message}`)
+      }
     }
     
-    // Fallback to last active chat if not on a specific page
-    if (!activeCharId) {
-      const activeChat = await spindle.chats.getActive(userId)
-      if (activeChat) activeCharId = activeChat.character_id
+    // Fallback to active chat if permission is granted [2.4.1]
+    if (!activeCharId && hasChats) {
+      try {
+        const activeChat = await spindle.chats.getActive(userId)
+        if (activeChat) activeCharId = activeChat.character_id
+      } catch (err: any) {
+        spindle.log.error(`Auto-detect active chat error: ${err.message}`)
+      }
     }
     
     spindle.sendToFrontend({ 
