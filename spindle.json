@@ -1,1 +1,10 @@
-{"version": "1.0.0","name": "Character AI Rewriter","identifier": "char_rewriter","author": "Your Name","description": "Uses AI to rewrite and enhance specific categories of a character card.","permissions": ["characters", "generation"],"entry_backend": "dist/backend.js","entry_frontend": "dist/frontend.js"}
+{
+  "version": "1.0.0",
+  "name": "Character AI Rewriter",
+  "identifier": "char_rewriter",
+  "author": "Your Name",
+  "description": "Uses AI to rewrite and enhance specific categories of a character card.",
+  "permissions": ["characters", "generation", "chats"],
+  "entry_backend": "dist/backend.js",
+  "entry_frontend": "dist/frontend.js"
+}
