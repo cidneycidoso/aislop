@@ -1,6 +1,7 @@
 import type { SpindleFrontendContext } from 'lumiverse-spindle-types'
 
 export function setup(ctx: SpindleFrontendContext) {
+  // Register the drawer tab sidebar button
   const tab = ctx.ui.registerDrawerTab({
     id: 'ai-rewriter',
     title: 'AI Character Rewriter',
@@ -8,10 +9,12 @@ export function setup(ctx: SpindleFrontendContext) {
     iconSvg: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>'
   })
 
+  // Permission warning UI
   const permissionWarning = document.createElement('div')
   permissionWarning.style.cssText = 'display:none; padding:16px; margin:16px; background:rgba(239,68,68,0.1); border:1px solid rgba(239,68,68,0.25); border-radius:var(--lumiverse-radius); color:var(--lumiverse-danger); font-size:13px; line-height:1.5;'
   tab.root.appendChild(permissionWarning)
 
+  // Main interaction container
   const container = document.createElement('div')
   container.style.cssText = 'display:flex;flex-direction:column;gap:16px;padding:16px;'
   tab.root.appendChild(container)
@@ -35,12 +38,20 @@ export function setup(ctx: SpindleFrontendContext) {
     }
   }
 
-  // --- 1. CHARACTER DROPDOWN ---
+  // --- 1. ALWAYS MOUNTED CHARACTER DROPDOWN ---
   const charSlot = document.createElement('div')
   container.appendChild(charSlot)
+  
+  // FIXED: Initialized with a default option matching the empty value to prevent library crashes [1.2.4]
   const charSelect = ctx.components.mountSelect(charSlot, {
-    value: '', placeholder: "Loading characters...", options: [],
-    onChange: (v) => { selectedChar = v; updateCategoryOptions(); fetchCurrentText() }
+    value: '',
+    placeholder: "Loading characters...",
+    options: [{ value: '', label: 'Loading characters...' }],
+    onChange: (v) => { 
+      selectedChar = v; 
+      updateCategoryOptions(); 
+      fetchCurrentText() 
+    }
   })
   activeMounts.push(charSelect)
 
@@ -48,7 +59,14 @@ export function setup(ctx: SpindleFrontendContext) {
   const catSlot = document.createElement('div')
   container.appendChild(catSlot)
   const catSelect = ctx.components.mountSelect(catSlot, {
-    value: selectedCategory, placeholder: "Select Category", options: [],
+    value: selectedCategory,
+    placeholder: "Select Category",
+    options: [
+      { value: 'description', label: 'Description' },
+      { value: 'personality', label: 'Personality' },
+      { value: 'scenario', label: 'Scenario' },
+      { value: 'first_mes', label: 'First Message' }
+    ],
     onChange: (v) => { selectedCategory = v; fetchCurrentText() }
   })
   activeMounts.push(catSelect)
@@ -77,10 +95,12 @@ export function setup(ctx: SpindleFrontendContext) {
   const promptSlot = document.createElement('div')
   container.appendChild(promptSlot)
   const promptSection = ctx.components.mountCollapsibleSection(promptSlot, {
-    title: 'Edit AI Instructions', defaultExpanded: false
+    title: 'Edit AI Instructions',
+    defaultExpanded: false
   })
   const basePromptInput = ctx.components.mountTextArea(promptSection.body, {
-    value: '', rows: 3, placeholder: 'Base System Prompt', onChange: (v) => { currentPrompts.base = v }
+    value: '', rows: 3, placeholder: 'Base System Prompt',
+    onChange: (v) => { currentPrompts.base = v }
   })
   activeMounts.push(basePromptInput)
   
@@ -102,8 +122,11 @@ export function setup(ctx: SpindleFrontendContext) {
   variantSelectSlot.style.display = 'none'
   container.appendChild(variantSelectSlot)
   
+  // FIXED: Initialized with a default option matching the 'original' value to prevent library crashes [1.2.4]
   const variantSelect = ctx.components.mountSelect(variantSelectSlot, {
-    value: 'original', placeholder: "Select Variant", options: [],
+    value: 'original',
+    placeholder: "Select Variant",
+    options: [{ value: 'original', label: 'Original Text' }],
     onChange: (v) => {
       if (v === 'original') currentTextInput.update({ value: originalTextRaw })
       else {
@@ -171,6 +194,7 @@ export function setup(ctx: SpindleFrontendContext) {
   // --- EVENT LISTENERS ---
   const unsubPermissions = ctx.events.on('PERMISSION_CHANGED', () => { requestInitData() })
 
+  // FIXED: Completely cleaned out legacy DOM queries that were causing silent crashes [2.4.1]
   ctx.onBackendMessage((payload: any) => {
     if (payload.type === 'permission_status') {
       container.style.display = 'none'
@@ -196,14 +220,23 @@ export function setup(ctx: SpindleFrontendContext) {
       selectedChar = payload.activeCharId || (payload.chars[0]?.id ?? '')
 
       charSelect.update({
-        value: selectedChar, placeholder: "Select Character", searchPlaceholder: "Search...",
+        value: selectedChar,
+        placeholder: "Select Character",
+        searchPlaceholder: "Search...",
         options: payload.chars.map((c: any) => ({
-          value: c.id, label: c.name, leading: c.image_id ? { type: 'image', src: `/api/v1/images/${c.image_id}?size=sm` } : undefined
+          value: c.id,
+          label: c.name,
+          leading: c.image_id ? { type: 'image', src: `/api/v1/images/${c.image_id}?size=sm` } : undefined
         }))
       })
 
       updateCategoryOptions()
       if (selectedChar) fetchCurrentText()
+    }
+
+    if (payload.type === 'prompts_updated') {
+      currentPrompts = payload.prompts
+      basePromptInput.update({ value: currentPrompts.base })
     }
 
     if (payload.type === 'char_text_result') {
@@ -243,4 +276,15 @@ export function setup(ctx: SpindleFrontendContext) {
       if (!payload.savedAsVariant) {
         currentTextInput.update({ value: resultInput.getValue() })
       }
-      resultInput.update({ value: '' }
+      resultInput.update({ value: '' })
+      applyBtn.style.display = 'none'
+
+      // Re-fetch clean data to ensure variant lists are completely updated [2.4.1]
+      requestInitData() 
+      fetchCurrentText()
+    }
+  })
+
+  function requestInitData() {
+    const match = window.location.hash.match(/\/(characters|chat)\/([a-zA-Z0-9_-]+)/)
+    ctx.sendToBackend({ type: 'get_init_data', routeTy
