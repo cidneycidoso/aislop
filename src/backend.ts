@@ -83,7 +83,7 @@ spindle.onFrontendMessage(async (payload: any, userId: string) => {
           text = char[payload.category as keyof typeof char] || ""
         }
 
-        // Fetch variants stored in the extensions blob!
+        // Fetch saved drafts from extensions metadata
         const extData = char.extensions?.['char_rewriter'] || {}
         const variants = extData.variants?.[payload.category] || []
 
@@ -130,46 +130,78 @@ spindle.onFrontendMessage(async (payload: any, userId: string) => {
     }
   }
 
-  else if (payload.type === 'apply') {
+  // Save a new draft version to history
+  else if (payload.type === 'save_version') {
+    if (!spindle.permissions.has('characters')) return
+    try {
+      const char = await spindle.characters.get(payload.characterId, userId)
+      if (!char) throw new Error("Character not found")
+
+      const extData = char.extensions?.['char_rewriter'] || { variants: {} }
+      if (!extData.variants) extData.variants = {}
+      if (!extData.variants[payload.category]) extData.variants[payload.category] = []
+      
+      // Prevent saving identical duplicates sequentially
+      const currentList = extData.variants[payload.category]
+      if (currentList[currentList.length - 1] !== payload.text) {
+        extData.variants[payload.category].push(payload.text)
+        await spindle.characters.update(payload.characterId, {
+          extensions: { 'char_rewriter': extData }
+        }, userId)
+        spindle.toast.success("Saved to draft history!", { userId } as any)
+      } else {
+        spindle.toast.info("This exact version is already saved.", { userId } as any)
+      }
+
+      spindle.sendToFrontend({ type: 'save_version_success', variants: extData.variants[payload.category] }, userId)
+    } catch (err: any) {
+      spindle.log.error(`Save version error: ${err.message}`)
+    }
+  }
+
+  // Delete a saved draft from history
+  else if (payload.type === 'delete_version') {
+    if (!spindle.permissions.has('characters')) return
+    try {
+      const char = await spindle.characters.get(payload.characterId, userId)
+      if (!char) throw new Error("Character not found")
+
+      const extData = char.extensions?.['char_rewriter'] || { variants: {} }
+      if (extData.variants?.[payload.category]) {
+        extData.variants[payload.category].splice(payload.index, 1)
+        await spindle.characters.update(payload.characterId, {
+          extensions: { 'char_rewriter': extData }
+        }, userId)
+        spindle.toast.success("Draft version deleted.", { userId } as any)
+      }
+
+      const updatedList = extData.variants?.[payload.category] || []
+      spindle.sendToFrontend({ type: 'save_version_success', variants: updatedList }, userId)
+    } catch (err: any) {
+      spindle.log.error(`Delete version error: ${err.message}`)
+    }
+  }
+
+  // Apply a selected version to overwrite the actual active card field
+  else if (payload.type === 'apply_version') {
     if (!spindle.permissions.has('characters')) return
     try {
       let updatePayload: any = {}
       const char = await spindle.characters.get(payload.characterId, userId)
       if (!char) throw new Error("Character not found")
 
-      // --- SAVE AS VARIANT / ALTERNATE FIELD ---
-      if (payload.saveAsNewVariant) {
-        if (payload.category === 'first_mes' || payload.category.startsWith('alt_greeting_')) {
-          // Native alternate greetings handling
-          const altGreetings = [...(char.alternate_greetings || [])]
-          altGreetings.push(payload.newText)
-          updatePayload = { alternate_greetings: altGreetings }
-        } else {
-          // Alternate fields (Variants) handling via extensions blob
-          const extData = char.extensions?.['char_rewriter'] || { variants: {} }
-          if (!extData.variants) extData.variants = {}
-          if (!extData.variants[payload.category]) extData.variants[payload.category] = []
-          
-          extData.variants[payload.category].push(payload.newText)
-          updatePayload = { extensions: { 'char_rewriter': extData } }
-        }
-      } 
-      
-      // --- STANDARD OVERWRITE ---
-      else {
-        if (payload.category.startsWith('alt_greeting_')) {
-          const altGreetings = [...(char.alternate_greetings || [])]
-          const idx = parseInt(payload.category.replace('alt_greeting_', ''), 10)
-          altGreetings[idx] = payload.newText
-          updatePayload = { alternate_greetings: altGreetings }
-        } else {
-          updatePayload = { [payload.category]: payload.newText }
-        }
+      if (payload.category.startsWith('alt_greeting_')) {
+        const altGreetings = [...(char.alternate_greetings || [])]
+        const idx = parseInt(payload.category.replace('alt_greeting_', ''), 10)
+        altGreetings[idx] = payload.text
+        updatePayload = { alternate_greetings: altGreetings }
+      } else {
+        updatePayload = { [payload.category]: payload.text }
       }
 
       await spindle.characters.update(payload.characterId, updatePayload, userId)
-      spindle.toast.success(payload.saveAsNewVariant ? "Saved as new Variant!" : "Character updated successfully!", { userId } as any)
-      spindle.sendToFrontend({ type: 'apply_success', savedAsVariant: payload.saveAsNewVariant }, userId)
+      spindle.toast.success("Card updated successfully!", { userId } as any)
+      spindle.sendToFrontend({ type: 'apply_success', text: payload.text }, userId)
     } catch (err: any) {
       spindle.log.error(`Apply error: ${err.message}`)
     }
