@@ -34,7 +34,6 @@ export function setup(ctx: SpindleFrontendContext) {
   const charSlot = document.createElement('div')
   container.appendChild(charSlot)
   
-  // Mounted instantly with a loading state, ensuring it never disappears
   const charSelect = ctx.components.mountSelect(charSlot, {
     value: '',
     placeholder: "Loading characters...",
@@ -80,7 +79,6 @@ export function setup(ctx: SpindleFrontendContext) {
   savePromptsBtn.onclick = () => ctx.sendToBackend({ type: 'save_prompts', prompts: currentPrompts })
   promptSection.body.appendChild(savePromptsBtn)
 
-  // --- 4. CURRENT TEXT VIEWER ---
   const currentTextLabel = document.createElement('div')
   currentTextLabel.style.cssText = 'font-weight: 500; font-size: 13px; color: var(--lumiverse-text-dim); margin-bottom: -8px;'
   currentTextLabel.textContent = "Current Character Card Text:"
@@ -93,7 +91,6 @@ export function setup(ctx: SpindleFrontendContext) {
   })
   activeMounts.push(currentTextInput)
 
-  // --- 5. GENERATE BUTTON ---
   const generateBtn = document.createElement('button')
   generateBtn.textContent = 'Rewrite with AI'
   generateBtn.className = 'btn'
@@ -111,7 +108,6 @@ export function setup(ctx: SpindleFrontendContext) {
   }
   container.appendChild(generateBtn)
 
-  // --- 6. AI RESULT VIEWER ---
   const resultSlot = document.createElement('div')
   container.appendChild(resultSlot)
   const resultInput = ctx.components.mountTextArea(resultSlot, {
@@ -119,7 +115,6 @@ export function setup(ctx: SpindleFrontendContext) {
   })
   activeMounts.push(resultInput)
 
-  // --- 7. APPLY BUTTON ---
   const applyBtn = document.createElement('button')
   applyBtn.textContent = 'Apply to Character Card'
   applyBtn.className = 'btn'
