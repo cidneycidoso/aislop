@@ -287,4 +287,14 @@ export function setup(ctx: SpindleFrontendContext) {
 
   function requestInitData() {
     const match = window.location.hash.match(/\/(characters|chat)\/([a-zA-Z0-9_-]+)/)
-    ctx.sendToBackend({ type: 'get_init_data', routeTy
+    ctx.sendToBackend({ type: 'get_init_data', routeType: match ? match[1] : null, routeId: match ? match[2] : null })
+  }
+
+  requestInitData()
+
+  return () => {
+    tab.destroy()
+    unsubPermissions()
+    activeMounts.forEach(m => m?.destroy?.())
+  }
+}
