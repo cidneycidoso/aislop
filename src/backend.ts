@@ -8,53 +8,58 @@ const DEFAULT_PROMPTS = {
   first_mes: "Focus on setting a strong hook, descriptive actions, and an engaging opening dialogue."
 }
 
+// Safely gather data after validating permissions
+async function checkAndSendInitData(userId: string, routeType?: string | null, routeId?: string | null) {
+  const hasCharacters = spindle.permissions.has('characters')
+  const hasGeneration = spindle.permissions.has('generation')
+
+  if (!hasCharacters || !hasGeneration) {
+    spindle.sendToFrontend({ type: 'permission_status', hasCharacters, hasGeneration }, userId)
+    return
+  }
+
+  try {
+    // 1. Fetch character list (pass userId to ensure database scope is correct)
+    const chars = await spindle.characters.list({ limit: 200, userId }, userId)
+    const prompts = await spindle.userStorage.getJson('prompts.json', { fallback: DEFAULT_PROMPTS, userId })
+    
+    // 2. Smart auto-detect active character based on what you are looking at
+    let activeCharId = null
+    if (routeType === 'characters' && routeId) {
+      activeCharId = routeId // You are on a character card page
+    } else if (routeType === 'chat' && routeId) {
+      const chat = await spindle.chats.get(routeId, userId)
+      if (chat) activeCharId = chat.character_id // You are in a specific chat
+    }
+    
+    // Fallback to last active chat if not on a specific page
+    if (!activeCharId) {
+      const activeChat = await spindle.chats.getActive(userId)
+      if (activeChat) activeCharId = activeChat.character_id
+    }
+    
+    spindle.sendToFrontend({ 
+      type: 'init_data', 
+      chars: chars.data, 
+      prompts,
+      activeCharId
+    }, userId)
+    
+  } catch (err: any) {
+    spindle.log.error(`Init error: ${err.message}`)
+    spindle.sendToFrontend({ type: 'init_error', error: err.message }, userId)
+  }
+}
+
 spindle.onFrontendMessage(async (payload: any, userId: string) => {
   if (payload.type === 'get_init_data') {
-    const hasCharacters = spindle.permissions.has('characters')
-    const hasGeneration = spindle.permissions.has('generation')
-
-    if (!hasCharacters || !hasGeneration) {
-      spindle.sendToFrontend({ type: 'permission_status', hasCharacters, hasGeneration }, userId)
-      return
-    }
-
-    try {
-      // 1. Fetch character list
-      const chars = await spindle.characters.list({ limit: 200 })
-      const prompts = await spindle.userStorage.getJson('prompts.json', { fallback: DEFAULT_PROMPTS, userId })
-      
-      // 2. Smart auto-detect active character based on what you are looking at
-      let activeCharId = null
-      if (payload.routeType === 'characters' && payload.routeId) {
-        activeCharId = payload.routeId // You are on a character card page
-      } else if (payload.routeType === 'chat' && payload.routeId) {
-        const chat = await spindle.chats.get(payload.routeId)
-        if (chat) activeCharId = chat.character_id // You are in a specific chat
-      }
-      
-      // Fallback to last active chat if not on a specific page
-      if (!activeCharId) {
-        const activeChat = await spindle.chats.getActive()
-        if (activeChat) activeCharId = activeChat.character_id
-      }
-      
-      spindle.sendToFrontend({ 
-        type: 'init_data', 
-        chars: chars.data, 
-        prompts,
-        activeCharId
-      }, userId)
-      
-    } catch (err: any) {
-      spindle.log.error(`Init error: ${err.message}`)
-      spindle.sendToFrontend({ type: 'init_error', error: err.message }, userId)
-    }
+    await checkAndSendInitData(userId, payload.routeType, payload.routeId)
   }
 
   else if (payload.type === 'get_char_text') {
     if (!spindle.permissions.has('characters')) return
     try {
-      const char = await spindle.characters.get(payload.characterId)
+      const char = await spindle.characters.get(payload.characterId, userId)
       if (char) {
         spindle.sendToFrontend({
           type: 'char_text_result',
@@ -93,7 +98,7 @@ spindle.onFrontendMessage(async (payload: any, userId: string) => {
           { role: 'system', content: sysPrompt },
           { role: 'user', content: `Original Text:\n${payload.originalText}` }
         ]
-      })
+      }, userId)
 
       spindle.sendToFrontend({ type: 'generate_result', result: result.content }, userId)
     } catch (err: any) {
@@ -107,7 +112,7 @@ spindle.onFrontendMessage(async (payload: any, userId: string) => {
     try {
       await spindle.characters.update(payload.characterId, { 
         [payload.category]: payload.newText 
-      })
+      }, userId)
       spindle.toast.success("Character updated successfully!")
     } catch (err: any) {
       spindle.log.error(`Apply error: ${err.message}`)
