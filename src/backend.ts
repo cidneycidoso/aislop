@@ -1,177 +1,300 @@
-declare const spindle: import('lumiverse-spindle-types').SpindleAPI
+import type { SpindleFrontendContext } from 'lumiverse-spindle-types'
 
-const DEFAULT_PROMPTS = {
-  base: "You are an expert creative writer and character designer. Rewrite the following character aspect to be more detailed, engaging, and well-written. Do not add commentary, output only the rewritten text.",
-  description: "Focus on physical appearance, background, and general vibe.",
-  personality: "Focus on traits, quirks, likes, dislikes, and psychological profile.",
-  scenario: "Focus on setting the scene and world-building.",
-  first_mes: "Focus on setting a strong hook, descriptive actions, and an engaging opening dialogue.",
-  mes_example: "Format as dialogue history. Focus on capturing the exact speech patterns, tone, and formatting of the character."
-}
+export function setup(ctx: SpindleFrontendContext) {
+  // Register the drawer tab sidebar button
+  const tab = ctx.ui.registerDrawerTab({
+    id: 'ai-rewriter',
+    title: 'AI Character Rewriter',
+    shortName: 'Rewrite',
+    iconSvg: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>'
+  })
 
-async function fetchAllCharacters(userId: string): Promise<any[]> {
-  const allChars: any[] = []
-  let offset = 0
-  const limit = 200
-  let hasMore = true
+  // Permission warning UI
+  const permissionWarning = document.createElement('div')
+  permissionWarning.style.cssText = 'display:none; padding:16px; margin:16px; background:rgba(239,68,68,0.1); border:1px solid rgba(239,68,68,0.25); border-radius:var(--lumiverse-radius); color:var(--lumiverse-danger); font-size:13px; line-height:1.5;'
+  tab.root.appendChild(permissionWarning)
 
-  while (hasMore) {
-    const chars = await spindle.characters.list({ limit, offset, userId }, userId)
-    if (!chars || !chars.data) break
-    allChars.push(...chars.data)
-    if (chars.data.length < limit || allChars.length >= (chars.total || 0)) {
-      hasMore = false
-    } else {
-      offset += limit
+  // Main interaction container
+  const container = document.createElement('div')
+  container.style.cssText = 'display:flex;flex-direction:column;gap:16px;padding:16px;'
+  tab.root.appendChild(container)
+
+  let selectedChar = ''
+  let selectedCategory = 'description'
+  let currentPrompts: any = {}
+  let fullCharList: any[] = []
+  
+  let saveAsVariant = false
+  let originalTextRaw = ''
+  let categoryVariants: string[] = []
+  
+  const activeMounts: any[] = []
+
+  const fetchCurrentText = () => {
+    if (selectedChar && selectedCategory) {
+      ctx.sendToBackend({ type: 'get_char_text', characterId: selectedChar, category: selectedCategory })
+      currentTextInput.update({ value: 'Loading current text...' })
+      variantSelectSlot.style.display = 'none' // Hide variant picker while loading
     }
   }
-  return allChars
-}
 
-async function checkAndSendInitData(userId: string, routeType?: string | null, routeId?: string | null) {
-  const hasCharacters = spindle.permissions.has('characters')
-  const hasGeneration = spindle.permissions.has('generation')
-  const hasChats = spindle.permissions.has('chats')
+  // --- 1. ALWAYS MOUNTED CHARACTER DROPDOWN ---
+  const charSlot = document.createElement('div')
+  container.appendChild(charSlot)
+  
+  // FIXED: Initialized with a default option matching the empty value to prevent library crashes [1.2.4]
+  const charSelect = ctx.components.mountSelect(charSlot, {
+    value: '',
+    placeholder: "Loading characters...",
+    options: [{ value: '', label: 'Loading characters...' }],
+    onChange: (v) => { 
+      selectedChar = v; 
+      updateCategoryOptions(); 
+      fetchCurrentText() 
+    }
+  })
+  activeMounts.push(charSelect)
 
-  if (!hasCharacters || !hasGeneration) {
-    spindle.sendToFrontend({ type: 'permission_status', hasCharacters, hasGeneration }, userId)
-    return
-  }
+  // --- 2. CATEGORY DROPDOWN ---
+  const catSlot = document.createElement('div')
+  container.appendChild(catSlot)
+  const catSelect = ctx.components.mountSelect(catSlot, {
+    value: selectedCategory,
+    placeholder: "Select Category",
+    options: [
+      { value: 'description', label: 'Description' },
+      { value: 'personality', label: 'Personality' },
+      { value: 'scenario', label: 'Scenario' },
+      { value: 'first_mes', label: 'First Message' }
+    ],
+    onChange: (v) => { selectedCategory = v; fetchCurrentText() }
+  })
+  activeMounts.push(catSelect)
 
-  try {
-    const charsData = await fetchAllCharacters(userId)
-    const prompts = await spindle.userStorage.getJson('prompts.json', { fallback: DEFAULT_PROMPTS, userId })
+  function updateCategoryOptions() {
+    const char = fullCharList.find(c => c.id === selectedChar)
+    const options = [
+      { value: 'description', label: 'Description' },
+      { value: 'personality', label: 'Personality' },
+      { value: 'scenario', label: 'Scenario' },
+      { value: 'mes_example', label: 'Example Messages' },
+      { value: 'first_mes', label: 'Main Greeting' }
+    ]
     
-    let activeCharId = null
-    if (routeType === 'characters' && routeId) {
-      activeCharId = routeId
-    } else if (routeType === 'chat' && routeId && hasChats) {
-      try {
-        const chat = await spindle.chats.get(routeId, userId)
-        if (chat) activeCharId = chat.character_id 
-      } catch (err: any) {}
+    if (char && char.alternate_greetings && char.alternate_greetings.length > 0) {
+      char.alternate_greetings.forEach((_: any, idx: number) => {
+        options.push({ value: `alt_greeting_${idx}`, label: `Alt Greeting ${idx + 1}` })
+      })
     }
     
-    if (!activeCharId && hasChats) {
-      try {
-        const activeChat = await spindle.chats.getActive(userId)
-        if (activeChat) activeCharId = activeChat.character_id
-      } catch (err: any) {}
-    }
-    
-    spindle.sendToFrontend({ type: 'init_data', chars: charsData, prompts, activeCharId }, userId)
-  } catch (err: any) {
-    spindle.sendToFrontend({ type: 'init_error', error: err.message }, userId)
-  }
-}
-
-spindle.onFrontendMessage(async (payload: any, userId: string) => {
-  if (payload.type === 'get_init_data') {
-    await checkAndSendInitData(userId, payload.routeType, payload.routeId)
+    if (!options.find(o => o.value === selectedCategory)) selectedCategory = 'description'
+    catSelect.update({ options, value: selectedCategory })
   }
 
-  else if (payload.type === 'get_char_text') {
-    if (!spindle.permissions.has('characters')) return
-    try {
-      const char = await spindle.characters.get(payload.characterId, userId)
-      if (char) {
-        let text = ""
-        if (payload.category.startsWith('alt_greeting_')) {
-          const idx = parseInt(payload.category.replace('alt_greeting_', ''), 10)
-          text = (char.alternate_greetings || [])[idx] || ""
-        } else {
-          text = char[payload.category as keyof typeof char] || ""
-        }
+  // --- 3. PROMPTS CONFIGURATION ---
+  const promptSlot = document.createElement('div')
+  container.appendChild(promptSlot)
+  const promptSection = ctx.components.mountCollapsibleSection(promptSlot, {
+    title: 'Edit AI Instructions',
+    defaultExpanded: false
+  })
+  const basePromptInput = ctx.components.mountTextArea(promptSection.body, {
+    value: '', rows: 3, placeholder: 'Base System Prompt',
+    onChange: (v) => { currentPrompts.base = v }
+  })
+  activeMounts.push(basePromptInput)
+  
+  const savePromptsBtn = document.createElement('button')
+  savePromptsBtn.textContent = 'Save Instructions'
+  savePromptsBtn.className = 'btn'
+  savePromptsBtn.style.marginTop = '8px'
+  savePromptsBtn.onclick = () => ctx.sendToBackend({ type: 'save_prompts', prompts: currentPrompts })
+  promptSection.body.appendChild(savePromptsBtn)
 
-        // Fetch variants stored in the extensions blob!
-        const extData = char.extensions?.['char_rewriter'] || {}
-        const variants = extData.variants?.[payload.category] || []
+  // --- 4. CURRENT TEXT VIEWER & VARIANT PICKER ---
+  const currentTextLabel = document.createElement('div')
+  currentTextLabel.style.cssText = 'font-weight: 500; font-size: 13px; color: var(--lumiverse-text-dim); margin-bottom: -8px;'
+  currentTextLabel.textContent = "Character Card Text / Variants:"
+  container.appendChild(currentTextLabel)
 
-        spindle.sendToFrontend({ type: 'char_text_result', text, variants }, userId)
+  // Variant Dropdown (Appears if variants exist)
+  const variantSelectSlot = document.createElement('div')
+  variantSelectSlot.style.display = 'none'
+  container.appendChild(variantSelectSlot)
+  
+  // FIXED: Initialized with a default option matching the 'original' value to prevent library crashes [1.2.4]
+  const variantSelect = ctx.components.mountSelect(variantSelectSlot, {
+    value: 'original',
+    placeholder: "Select Variant",
+    options: [{ value: 'original', label: 'Original Text' }],
+    onChange: (v) => {
+      if (v === 'original') currentTextInput.update({ value: originalTextRaw })
+      else {
+        const vIdx = parseInt(v, 10)
+        currentTextInput.update({ value: categoryVariants[vIdx] || '' })
       }
-    } catch (err: any) {
-      spindle.log.error(`Text fetch error: ${err.message}`)
     }
-  }
+  })
+  activeMounts.push(variantSelect)
 
-  else if (payload.type === 'save_prompts') {
-    try {
-      await spindle.userStorage.setJson('prompts.json', payload.prompts, { userId })
-      spindle.toast.success("Instructions updated!", { userId } as any)
-      spindle.sendToFrontend({ type: 'prompts_updated', prompts: payload.prompts }, userId)
-    } catch (err: any) {}
-  }
+  const currentTextSlot = document.createElement('div')
+  container.appendChild(currentTextSlot)
+  const currentTextInput = ctx.components.mountTextArea(currentTextSlot, {
+    value: '', rows: 5, placeholder: 'Select a character card above...'
+  })
+  activeMounts.push(currentTextInput)
 
-  else if (payload.type === 'generate') {
-    if (!spindle.permissions.has('generation')) {
-      spindle.toast.error("Generation permission required.", { userId } as any)
-      spindle.sendToFrontend({ type: 'generate_failed' }, userId)
+  // --- 5. GENERATE BUTTON ---
+  const generateBtn = document.createElement('button')
+  generateBtn.textContent = 'Rewrite with AI'
+  generateBtn.className = 'btn'
+  generateBtn.style.cssText = 'background: var(--lumiverse-primary); color: white;'
+  generateBtn.onclick = () => {
+    if (!selectedChar) return
+    generateBtn.textContent = 'Generating...'
+    generateBtn.disabled = true
+    ctx.sendToBackend({ 
+      type: 'generate', characterId: selectedChar, category: selectedCategory, originalText: currentTextInput.getValue() 
+    })
+  }
+  container.appendChild(generateBtn)
+
+  // --- 6. AI RESULT VIEWER ---
+  const resultSlot = document.createElement('div')
+  container.appendChild(resultSlot)
+  const resultInput = ctx.components.mountTextArea(resultSlot, {
+    value: '', rows: 6, placeholder: 'AI suggestions will appear here...',
+  })
+  activeMounts.push(resultInput)
+
+  // --- 7. VARIANT TOGGLE (Now ALWAYS visible) ---
+  const variantSlot = document.createElement('div')
+  container.appendChild(variantSlot)
+
+  const variantCheckbox = ctx.components.mountCheckbox(variantSlot, {
+    checked: false,
+    label: 'Save as new Variant branch (keep original)',
+    hint: 'Saves this rewrite as an alternate field instead of permanently replacing the current text.',
+    onChange: (checked) => { saveAsVariant = checked }
+  })
+  activeMounts.push(variantCheckbox)
+
+  // --- 8. APPLY BUTTON ---
+  const applyBtn = document.createElement('button')
+  applyBtn.textContent = 'Apply to Character Card'
+  applyBtn.className = 'btn'
+  applyBtn.style.cssText = 'background: var(--lumiverse-success); color: white; display: none;'
+  applyBtn.onclick = () => {
+    ctx.sendToBackend({ 
+      type: 'apply', characterId: selectedChar, category: selectedCategory, newText: resultInput.getValue(), saveAsNewVariant: saveAsVariant 
+    })
+  }
+  container.appendChild(applyBtn)
+
+  // --- EVENT LISTENERS ---
+  const unsubPermissions = ctx.events.on('PERMISSION_CHANGED', () => { requestInitData() })
+
+  // FIXED: Completely cleaned out legacy DOM queries that were causing silent crashes [2.4.1]
+  ctx.onBackendMessage((payload: any) => {
+    if (payload.type === 'permission_status') {
+      container.style.display = 'none'
+      permissionWarning.style.display = 'block'
+      permissionWarning.innerHTML = `<strong>Permissions Required.</strong> Please enable Characters and Generation access.`
       return
     }
-    try {
-      const prompts = await spindle.userStorage.getJson('prompts.json', { fallback: DEFAULT_PROMPTS, userId })
-      const promptCat = payload.category.startsWith('alt_greeting_') ? 'first_mes' : payload.category
-      const sysPrompt = `${prompts.base}\n\nCategory guidance:\n${prompts[promptCat] || ""}`
 
-      spindle.toast.info("AI is rewriting...", { userId } as any)
-      
-      const result = await spindle.generate.quiet({
-        messages: [
-          { role: 'system', content: sysPrompt },
-          { role: 'user', content: `Original Text:\n${payload.originalText}` }
-        ],
-        userId
-      } as any, userId) 
-
-      spindle.sendToFrontend({ type: 'generate_result', result: result.content }, userId)
-    } catch (err: any) {
-      spindle.toast.error(`Generation failed: ${err.message}`, { userId } as any)
-      spindle.sendToFrontend({ type: 'generate_failed' }, userId)
+    if (payload.type === 'init_error') {
+      charSelect.update({ placeholder: "Error loading characters", options: [] })
+      currentTextInput.update({ value: `Backend error: ${payload.error}` })
+      return
     }
-  }
 
-  else if (payload.type === 'apply') {
-    if (!spindle.permissions.has('characters')) return
-    try {
-      let updatePayload: any = {}
-      const char = await spindle.characters.get(payload.characterId, userId)
-      if (!char) throw new Error("Character not found")
+    if (payload.type === 'init_data') {
+      container.style.display = 'flex'
+      permissionWarning.style.display = 'none'
 
-      // --- SAVE AS VARIANT / ALTERNATE FIELD ---
-      if (payload.saveAsNewVariant) {
-        if (payload.category === 'first_mes' || payload.category.startsWith('alt_greeting_')) {
-          // Native alternate greetings handling
-          const altGreetings = [...(char.alternate_greetings || [])]
-          altGreetings.push(payload.newText)
-          updatePayload = { alternate_greetings: altGreetings }
-        } else {
-          // Alternate fields (Variants) handling via extensions blob
-          const extData = char.extensions?.['char_rewriter'] || { variants: {} }
-          if (!extData.variants) extData.variants = {}
-          if (!extData.variants[payload.category]) extData.variants[payload.category] = []
-          
-          extData.variants[payload.category].push(payload.newText)
-          updatePayload = { extensions: { 'char_rewriter': extData } }
-        }
-      } 
+      fullCharList = payload.chars 
+      currentPrompts = payload.prompts
+      basePromptInput.update({ value: currentPrompts.base })
+
+      selectedChar = payload.activeCharId || (payload.chars[0]?.id ?? '')
+
+      charSelect.update({
+        value: selectedChar,
+        placeholder: "Select Character",
+        searchPlaceholder: "Search...",
+        options: payload.chars.map((c: any) => ({
+          value: c.id,
+          label: c.name,
+          leading: c.image_id ? { type: 'image', src: `/api/v1/images/${c.image_id}?size=sm` } : undefined
+        }))
+      })
+
+      updateCategoryOptions()
+      if (selectedChar) fetchCurrentText()
+    }
+
+    if (payload.type === 'prompts_updated') {
+      currentPrompts = payload.prompts
+      basePromptInput.update({ value: currentPrompts.base })
+    }
+
+    if (payload.type === 'char_text_result') {
+      originalTextRaw = payload.text
+      categoryVariants = payload.variants || []
       
-      // --- STANDARD OVERWRITE ---
-      else {
-        if (payload.category.startsWith('alt_greeting_')) {
-          const altGreetings = [...(char.alternate_greetings || [])]
-          const idx = parseInt(payload.category.replace('alt_greeting_', ''), 10)
-          altGreetings[idx] = payload.newText
-          updatePayload = { alternate_greetings: altGreetings }
-        } else {
-          updatePayload = { [payload.category]: payload.newText }
-        }
+      currentTextInput.update({ value: originalTextRaw })
+      resultInput.update({ value: '' })
+      applyBtn.style.display = 'none'
+      
+      // Update variant selector UI
+      if (categoryVariants.length > 0) {
+        variantSelectSlot.style.display = 'block'
+        const variantOptions = [{ value: 'original', label: 'Original Text' }]
+        categoryVariants.forEach((_, i) => {
+          variantOptions.push({ value: i.toString(), label: `Variant ${i + 1}` })
+        })
+        variantSelect.update({ options: variantOptions, value: 'original' })
+      } else {
+        variantSelectSlot.style.display = 'none'
       }
-
-      await spindle.characters.update(payload.characterId, updatePayload, userId)
-      spindle.toast.success(payload.saveAsNewVariant ? "Saved as new Variant!" : "Character updated successfully!", { userId } as any)
-      spindle.sendToFrontend({ type: 'apply_success', savedAsVariant: payload.saveAsNewVariant }, userId)
-    } catch (err: any) {
-      spindle.log.error(`Apply error: ${err.message}`)
     }
+    
+    if (payload.type === 'generate_result') {
+      generateBtn.textContent = 'Rewrite with AI'
+      generateBtn.disabled = false
+      resultInput.update({ value: payload.result })
+      applyBtn.style.display = 'block'
+    }
+    
+    if (payload.type === 'generate_failed') {
+      generateBtn.textContent = 'Rewrite with AI'
+      generateBtn.disabled = false
+    }
+
+    if (payload.type === 'apply_success') {
+      if (!payload.savedAsVariant) {
+        currentTextInput.update({ value: resultInput.getValue() })
+      }
+      resultInput.update({ value: '' })
+      applyBtn.style.display = 'none'
+
+      // Re-fetch clean data to ensure variant lists are completely updated [2.4.1]
+      requestInitData() 
+      fetchCurrentText()
+    }
+  })
+
+  function requestInitData() {
+    const match = window.location.hash.match(/\/(characters|chat)\/([a-zA-Z0-9_-]+)/)
+    ctx.sendToBackend({ type: 'get_init_data', routeType: match ? match[1] : null, routeId: match ? match[2] : null })
   }
-})
+
+  requestInitData()
+
+  return () => {
+    tab.destroy()
+    unsubPermissions()
+    activeMounts.forEach(m => m?.destroy?.())
+  }
+}
