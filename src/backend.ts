@@ -8,41 +8,47 @@ const DEFAULT_PROMPTS = {
   first_mes: "Focus on setting a strong hook, descriptive actions, and an engaging opening dialogue."
 }
 
-// Safely gather data after validating permissions
-async function checkAndSendInitData(userId?: string) {
-  const hasCharacters = spindle.permissions.has('characters')
-  const hasGeneration = spindle.permissions.has('generation')
-
-  if (!hasCharacters || !hasGeneration) {
-    spindle.sendToFrontend({
-      type: 'permission_status',
-      hasCharacters,
-      hasGeneration
-    }, userId)
-    return
-  }
-
-  try {
-    const chars = await spindle.characters.list({ limit: 100 })
-    const prompts = await spindle.userStorage.getJson('prompts.json', { fallback: DEFAULT_PROMPTS, userId })
-    
-    const activeChat = await spindle.chats.getActive()
-    const activeCharId = activeChat ? activeChat.character_id : null
-    
-    spindle.sendToFrontend({ 
-      type: 'init_data', 
-      chars: chars.data, 
-      prompts,
-      activeCharId
-    }, userId)
-  } catch (err: any) {
-    spindle.log.error(`Failed to load initial data: ${err.message}`)
-  }
-}
-
-spindle.onFrontendMessage(async (payload: any, userId?: string) => {
+spindle.onFrontendMessage(async (payload: any, userId: string) => {
   if (payload.type === 'get_init_data') {
-    await checkAndSendInitData(userId)
+    const hasCharacters = spindle.permissions.has('characters')
+    const hasGeneration = spindle.permissions.has('generation')
+
+    if (!hasCharacters || !hasGeneration) {
+      spindle.sendToFrontend({ type: 'permission_status', hasCharacters, hasGeneration }, userId)
+      return
+    }
+
+    try {
+      // 1. Fetch character list
+      const chars = await spindle.characters.list({ limit: 200 })
+      const prompts = await spindle.userStorage.getJson('prompts.json', { fallback: DEFAULT_PROMPTS, userId })
+      
+      // 2. Smart auto-detect active character based on what you are looking at
+      let activeCharId = null
+      if (payload.routeType === 'characters' && payload.routeId) {
+        activeCharId = payload.routeId // You are on a character card page
+      } else if (payload.routeType === 'chat' && payload.routeId) {
+        const chat = await spindle.chats.get(payload.routeId)
+        if (chat) activeCharId = chat.character_id // You are in a specific chat
+      }
+      
+      // Fallback to last active chat if not on a specific page
+      if (!activeCharId) {
+        const activeChat = await spindle.chats.getActive()
+        if (activeChat) activeCharId = activeChat.character_id
+      }
+      
+      spindle.sendToFrontend({ 
+        type: 'init_data', 
+        chars: chars.data, 
+        prompts,
+        activeCharId
+      }, userId)
+      
+    } catch (err: any) {
+      spindle.log.error(`Init error: ${err.message}`)
+      spindle.sendToFrontend({ type: 'init_error', error: err.message }, userId)
+    }
   }
 
   else if (payload.type === 'get_char_text') {
@@ -56,7 +62,7 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
         }, userId)
       }
     } catch (err: any) {
-      spindle.log.error(`Failed to get character text: ${err.message}`)
+      spindle.log.error(`Text fetch error: ${err.message}`)
     }
   }
 
@@ -66,7 +72,7 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
       spindle.toast.success("Instructions updated!")
       spindle.sendToFrontend({ type: 'prompts_updated', prompts: payload.prompts }, userId)
     } catch (err: any) {
-      spindle.log.error(`Failed to save prompts: ${err.message}`)
+      spindle.log.error(`Save error: ${err.message}`)
     }
   }
 
@@ -104,7 +110,7 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
       })
       spindle.toast.success("Character updated successfully!")
     } catch (err: any) {
-      spindle.log.error(`Failed to update character: ${err.message}`)
+      spindle.log.error(`Apply error: ${err.message}`)
     }
   }
 })
