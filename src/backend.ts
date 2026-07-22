@@ -36,7 +36,7 @@ async function handleInitData(userId: string, routeType?: string | null, routeId
   try {
     const chars = await getCharacterList()
     
-    // spindle.storage uses simplified extension storage
+    // spindle.storage handles extension storage
     const prompts = await spindle.storage.getJson('prompts.json', { fallback: DEFAULT_PROMPTS })
 
     let activeCharId = null
