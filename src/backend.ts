@@ -9,7 +9,6 @@ const DEFAULT_PROMPTS = {
   mes_example: "Format as dialogue history. Focus on capturing the exact speech patterns, tone, and formatting of the character."
 }
 
-// v1.1.0: userId must be explicitly threaded through to entity fetchers
 async function fetchAllCharacters(userId: string): Promise<any[]> {
   const allChars: any[] = []
   let offset = 0
@@ -17,8 +16,8 @@ async function fetchAllCharacters(userId: string): Promise<any[]> {
   let hasMore = true
 
   while (hasMore) {
-    // Explicitly pass userId as the trailing argument for operator-scoped capability
-    const chars = await (spindle.characters.list as any)({ limit, offset }, userId)
+    // FIX: userId must be a property inside the options object, not a second argument.
+    const chars = await (spindle.characters.list as any)({ limit, offset, userId })
     if (!chars || !chars.data) break
     
     allChars.push(...chars.data)
@@ -45,7 +44,6 @@ async function checkAndSendInitData(userId: string, routeType?: string | null, r
   try {
     const charsData = await fetchAllCharacters(userId)
     
-    // Explicit userId is REQUIRED for userStorage in operator-scoped extensions
     const prompts = await spindle.userStorage.getJson('prompts.json', { fallback: DEFAULT_PROMPTS, userId })
     
     let activeCharId = null
@@ -53,14 +51,16 @@ async function checkAndSendInitData(userId: string, routeType?: string | null, r
       activeCharId = routeId
     } else if (routeType === 'chat' && routeId && hasChats) {
       try {
-        const chat = await (spindle.chats.get as any)(routeId, userId)
+        // FIX: Pass as options bag
+        const chat = await (spindle.chats.get as any)(routeId, { userId })
         if (chat) activeCharId = chat.character_id 
       } catch (err: any) {}
     }
     
     if (!activeCharId && hasChats) {
       try {
-        const activeChat = await (spindle.chats.getActive as any)(userId)
+        // FIX: Pass as options bag
+        const activeChat = await (spindle.chats.getActive as any)({ userId })
         if (activeChat) activeCharId = activeChat.character_id
       } catch (err: any) {}
     }
@@ -86,7 +86,8 @@ spindle.onFrontendMessage(async (payload: any, userId: string) => {
   else if (payload.type === 'get_char_text') {
     if (!spindle.permissions.has('characters')) return
     try {
-      const char = await (spindle.characters.get as any)(payload.characterId, userId)
+      // FIX: Pass options bag
+      const char = await (spindle.characters.get as any)(payload.characterId, { userId })
       if (char) {
         let text = ""
         if (payload.category.startsWith('alt_greeting_')) {
@@ -129,11 +130,13 @@ spindle.onFrontendMessage(async (payload: any, userId: string) => {
 
       spindle.toast.info("AI is rewriting...")
       
+      // FIX: Some generator endpoints check DTO properties, others check a secondary argument. Pass in both to be safe.
       const result = await (spindle.generate.quiet as any)({
         messages: [
           { role: 'system', content: sysPrompt },
           { role: 'user', content: `Original Text:\n${payload.originalText}` }
-        ]
+        ],
+        userId
       }, userId) 
 
       const genText = result.text || result.content || ""
@@ -147,7 +150,7 @@ spindle.onFrontendMessage(async (payload: any, userId: string) => {
   else if (payload.type === 'save_version') {
     if (!spindle.permissions.has('characters')) return
     try {
-      const char = await (spindle.characters.get as any)(payload.characterId, userId)
+      const char = await (spindle.characters.get as any)(payload.characterId, { userId })
       if (!char) throw new Error("Character not found")
 
       const extData = char.extensions?.['char_rewriter'] || { variants: {} }
@@ -160,7 +163,8 @@ spindle.onFrontendMessage(async (payload: any, userId: string) => {
         
         await (spindle.characters.update as any)(payload.characterId, {
           extensions: { 'char_rewriter': extData }
-        }, userId)
+        }, { userId })
+        
         spindle.toast.success("Saved to draft history!")
       } else {
         spindle.toast.info("This exact version is already saved.")
@@ -175,7 +179,7 @@ spindle.onFrontendMessage(async (payload: any, userId: string) => {
   else if (payload.type === 'delete_version') {
     if (!spindle.permissions.has('characters')) return
     try {
-      const char = await (spindle.characters.get as any)(payload.characterId, userId)
+      const char = await (spindle.characters.get as any)(payload.characterId, { userId })
       if (!char) throw new Error("Character not found")
 
       const extData = char.extensions?.['char_rewriter'] || { variants: {} }
@@ -184,7 +188,8 @@ spindle.onFrontendMessage(async (payload: any, userId: string) => {
         
         await (spindle.characters.update as any)(payload.characterId, {
           extensions: { 'char_rewriter': extData }
-        }, userId)
+        }, { userId })
+        
         spindle.toast.success("Draft version deleted.")
       }
 
@@ -199,7 +204,7 @@ spindle.onFrontendMessage(async (payload: any, userId: string) => {
     if (!spindle.permissions.has('characters')) return
     try {
       let updatePayload: any = {}
-      const char = await (spindle.characters.get as any)(payload.characterId, userId)
+      const char = await (spindle.characters.get as any)(payload.characterId, { userId })
       if (!char) throw new Error("Character not found")
 
       if (payload.category.startsWith('alt_greeting_')) {
@@ -211,7 +216,7 @@ spindle.onFrontendMessage(async (payload: any, userId: string) => {
         updatePayload = { [payload.category]: payload.text }
       }
 
-      await (spindle.characters.update as any)(payload.characterId, updatePayload, userId)
+      await (spindle.characters.update as any)(payload.characterId, updatePayload, { userId })
       spindle.toast.success("Card updated successfully!")
       spindle.sendToFrontend({ type: 'apply_success', text: payload.text }, userId)
     } catch (err: any) {
