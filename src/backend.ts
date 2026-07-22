@@ -1,11 +1,5 @@
 declare const spindle: import('lumiverse-spindle-types').SpindleAPI
 
-// Backend now owns all character reading/writing. This fixes the
-// operator-scoped userId resolution issue because the Spindle runtime
-// resolves the correct user from the extension context automatically
-// when spindle.characters.* / spindle.chats.* are called inside an
-// onFrontendMessage handler.
-
 const DEFAULT_PROMPTS = {
   base: "You are an expert creative writer and character designer. Rewrite the following character aspect to be more detailed, engaging, and well-written. Do not add commentary, output only the rewritten text.",
   description: "Focus on physical appearance, background, and general vibe.",
@@ -70,7 +64,8 @@ spindle.onFrontendMessage(async (payload: any, userId: string) => {
       let offset = 0
       const limit = 200
       while (true) {
-        const { data, total } = await spindle.characters.list({ limit, offset })
+        // NOTE: userId passed explicitly for operator-scoped installs
+        const { data, total } = await spindle.characters.list({ limit, offset, userId })
         allChars.push(...data)
         if (data.length < limit || allChars.length >= total) break
         offset += limit
@@ -93,12 +88,12 @@ spindle.onFrontendMessage(async (payload: any, userId: string) => {
       if (payload.routeType === 'characters' && payload.routeId) {
         charId = payload.routeId
       } else if (payload.routeType === 'chat' && payload.routeId && spindle.permissions.has('chats')) {
-        const chat = await spindle.chats.get(payload.routeId)
+        const chat = await spindle.chats.get(payload.routeId, { userId })
         charId = chat?.character_id || null
       }
 
       if (!charId && spindle.permissions.has('chats')) {
-        const activeChat = await spindle.chats.getActive()
+        const activeChat = await spindle.chats.getActive({ userId })
         charId = activeChat?.character_id || null
       }
 
@@ -118,7 +113,7 @@ spindle.onFrontendMessage(async (payload: any, userId: string) => {
       return
     }
     try {
-      const char = await spindle.characters.get(payload.characterId)
+      const char = await spindle.characters.get(payload.characterId, { userId })
       if (!char) { sendError('Character not found'); return }
 
       const extData = char.extensions?.['char_rewriter'] || { variants: {} }
@@ -130,7 +125,7 @@ spindle.onFrontendMessage(async (payload: any, userId: string) => {
         list.push(payload.text)
         await spindle.characters.update(payload.characterId, {
           extensions: { char_rewriter: extData }
-        })
+        }, { userId })
       }
 
       spindle.sendToFrontend({
@@ -154,7 +149,7 @@ spindle.onFrontendMessage(async (payload: any, userId: string) => {
       return
     }
     try {
-      const char = await spindle.characters.get(payload.characterId)
+      const char = await spindle.characters.get(payload.characterId, { userId })
       if (!char) { sendError('Character not found'); return }
 
       const extData = char.extensions?.['char_rewriter'] || { variants: {} }
@@ -162,7 +157,7 @@ spindle.onFrontendMessage(async (payload: any, userId: string) => {
         extData.variants[payload.category].splice(payload.index, 1)
         await spindle.characters.update(payload.characterId, {
           extensions: { char_rewriter: extData }
-        })
+        }, { userId })
       }
 
       spindle.sendToFrontend({
@@ -189,7 +184,7 @@ spindle.onFrontendMessage(async (payload: any, userId: string) => {
       let updatePayload: any = {}
 
       if (payload.category.startsWith('alt_greeting_')) {
-        const char = await spindle.characters.get(payload.characterId)
+        const char = await spindle.characters.get(payload.characterId, { userId })
         if (!char) { sendError('Character not found'); return }
 
         const altGreetings = [...(char.alternate_greetings || [])]
@@ -200,7 +195,7 @@ spindle.onFrontendMessage(async (payload: any, userId: string) => {
         updatePayload = { [payload.category]: payload.text }
       }
 
-      await spindle.characters.update(payload.characterId, updatePayload)
+      await spindle.characters.update(payload.characterId, updatePayload, { userId })
 
       spindle.sendToFrontend({
         type: 'version_applied',
@@ -214,7 +209,7 @@ spindle.onFrontendMessage(async (payload: any, userId: string) => {
   }
 
   // ------------------------------------------------------------------
-  // GENERATION  (unchanged logic, scoped to userId)
+  // GENERATION
   // ------------------------------------------------------------------
   else if (payload.type === 'generate') {
     if (!spindle.permissions.has('generation')) {
