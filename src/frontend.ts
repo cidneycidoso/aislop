@@ -419,9 +419,16 @@ export function setup(ctx: SpindleFrontendContext) {
           method: 'PATCH',
           body: JSON.stringify({ extensions: mergedExtensions })
         })
-        // Keep the cached detail object (the merge base for the *next*
-        // save/delete/apply) in sync with what we just wrote.
-        char.extensions = mergedExtensions
+
+        // Verify it actually persisted rather than trusting the status code.
+        const verify = await apiFetch(`/api/v1/characters/${selectedChar}`)
+        const verifyList = verify?.extensions?.['char_rewriter']?.variants?.[selectedCategory]
+        if (!Array.isArray(verifyList) || verifyList[verifyList.length - 1] !== text) {
+          console.warn('[AI Character Rewriter] Save did not persist. Sent extensions:', mergedExtensions, 'Server now has:', verify?.extensions)
+          throw new Error(`Server accepted the save but didn't keep it — check the console for the raw response. This install's PATCH may not merge "extensions" the way this extension expects.`)
+        }
+        char.extensions = verify.extensions
+        charDetailCache.set(selectedChar, verify)
       }
 
       categoryVariants = extData.variants[selectedCategory]
@@ -469,6 +476,21 @@ export function setup(ctx: SpindleFrontendContext) {
         method: 'PATCH',
         body: JSON.stringify(updatePayload)
       })
+
+      // Verify the write actually landed instead of trusting a 2xx status.
+      // Some REST implementations return 200 on a PATCH that silently didn't
+      // apply (wrong field name, wrong body shape, etc.) — bypass the cache
+      // and re-GET so we can tell the difference between "worked" and
+      // "server accepted the request but nothing changed."
+      const verify = await apiFetch(`/api/v1/characters/${selectedChar}`)
+      const actual = selectedCategory.startsWith('alt_greeting_')
+        ? (verify?.alternate_greetings || [])[parseInt(selectedCategory.replace('alt_greeting_', ''), 10)]
+        : verify?.[selectedCategory]
+      if (actual !== text) {
+        console.warn('[AI Character Rewriter] Apply did not persist. Sent:', updatePayload, 'Server now has:', verify)
+        throw new Error(`Server accepted the request but the card wasn't updated. Check the browser console for the raw response — the field name/shape this extension is sending (PATCH ${JSON.stringify(updatePayload)}) may not match what this Lumiverse install expects.`)
+      }
+      charDetailCache.set(selectedChar, verify)
 
       // Keep both caches in sync: the detail cache (source of truth for
       // future save/delete/apply merges) and the slim list entry (source
