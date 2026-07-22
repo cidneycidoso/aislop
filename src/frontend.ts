@@ -34,26 +34,40 @@ async function apiFetch(path: string, options: RequestInit = {}) {
 }
 
 async function fetchAllCharactersFromApi(): Promise<any[]> {
-  const allChars: any[] = []
+  const byId = new Map<string, any>()
   let offset = 0
   const limit = 200
-  let hasMore = true
+  let page = 1
+  const MAX_PAGES = 100 // safety cap — 20,000 characters — never spin forever
 
-  while (hasMore) {
-    const result = await apiFetch(`/api/v1/characters?limit=${limit}&offset=${offset}`)
+  while (page <= MAX_PAGES) {
+    // Send both offset- and page-style params. Extra query params a REST
+    // endpoint doesn't recognize are just ignored, so this is safe either
+    // way and covers both common pagination conventions without needing to
+    // know which one this install actually implements.
+    const result = await apiFetch(`/api/v1/characters?limit=${limit}&offset=${offset}&page=${page}`)
     const data = Array.isArray(result) ? result : (result?.data ?? [])
-    const total = Array.isArray(result) ? data.length : result?.total
+    const total = Array.isArray(result) ? undefined : result?.total
 
     if (!data.length) break
-    allChars.push(...data)
 
-    if (data.length < limit || (typeof total === 'number' && allChars.length >= total)) {
-      hasMore = false
-    } else {
-      offset += limit
+    const beforeCount = byId.size
+    for (const c of data) byId.set(c.id, c)
+    const newCount = byId.size - beforeCount
+
+    // If this "next page" came back with nothing we haven't already seen,
+    // the server isn't respecting offset/page — stop instead of looping.
+    if (newCount === 0) break
+
+    if (data.length < limit || (typeof total === 'number' && byId.size >= total)) {
+      break
     }
+
+    offset += limit
+    page += 1
   }
-  return allChars
+
+  return Array.from(byId.values())
 }
 
 async function resolveActiveCharId(routeType: string | null, routeId: string | null): Promise<string | null> {
@@ -174,7 +188,7 @@ export function setup(ctx: SpindleFrontendContext) {
   const promptSlot = document.createElement('div')
   container.appendChild(promptSlot)
   const promptSection = ctx.components.mountCollapsibleSection(promptSlot, {
-    title: 'Edit AI Instructions', defaultExpanded: false
+    title: 'Edit AI Instructions', defaultExpanded: true
   })
   const basePromptInput = ctx.components.mountTextArea(promptSection.body, {
     value: '', rows: 3, placeholder: 'Base System Prompt', onChange: (v) => { currentPrompts.base = v }
