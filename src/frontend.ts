@@ -49,6 +49,7 @@ export function setup(ctx: SpindleFrontendContext) {
   const charSelect = ctx.components.mountSelect(charSlot, {
     value: '', placeholder: "Loading characters...", options: [{ value: '', label: 'Loading characters...' }],
     onChange: (v) => { 
+      if (!v) return
       selectedChar = v; 
       updateCategoryOptions(); 
       fetchCurrentText() 
@@ -258,30 +259,42 @@ export function setup(ctx: SpindleFrontendContext) {
       container.style.display = 'flex'
       permissionWarning.style.display = 'none'
 
-      fullCharList = payload.chars 
-      currentPrompts = payload.prompts
-      basePromptInput.update({ value: currentPrompts.base })
+      fullCharList = payload.chars || []
+      currentPrompts = payload.prompts || {}
+      basePromptInput.update({ value: currentPrompts.base || '' })
 
-      selectedChar = payload.activeCharId || (payload.chars[0]?.id ?? '')
+      selectedChar = payload.activeCharId || (fullCharList[0]?.id ?? '')
+
+      const options = fullCharList.length > 0
+        ? fullCharList.map((c: any) => ({
+            value: c.id,
+            label: c.name || 'Unnamed Character',
+            leading: c.image_id ? { type: 'image', src: `/api/v1/images/${c.image_id}?size=sm` } : undefined
+          }))
+        : [{ value: '', label: 'No characters available' }]
 
       charSelect.update({
-        value: selectedChar, placeholder: "Select Character", searchPlaceholder: "Search...",
-        options: payload.chars.map((c: any) => ({
-          value: c.id, label: c.name, leading: c.image_id ? { type: 'image', src: `/api/v1/images/${c.image_id}?size=sm` } : undefined
-        }))
+        value: selectedChar,
+        placeholder: fullCharList.length > 0 ? "Select Character" : "No characters available",
+        searchPlaceholder: "Search...",
+        options
       })
 
       updateCategoryOptions()
-      if (selectedChar) fetchCurrentText()
+      if (selectedChar) {
+        fetchCurrentText()
+      } else {
+        currentTextInput.update({ value: 'No character selected.' })
+      }
     }
 
     if (payload.type === 'prompts_updated') {
       currentPrompts = payload.prompts
-      basePromptInput.update({ value: currentPrompts.base })
+      basePromptInput.update({ value: currentPrompts.base || '' })
     }
 
     if (payload.type === 'char_text_result') {
-      originalTextRaw = payload.text
+      originalTextRaw = payload.text || ''
       categoryVariants = payload.variants || []
       selectedVersionKey = 'live'
       
