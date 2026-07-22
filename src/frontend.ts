@@ -1,7 +1,7 @@
 import type { SpindleFrontendContext } from 'lumiverse-spindle-types'
 
 export function setup(ctx: SpindleFrontendContext) {
-  // 1. Register the Drawer Tab in Lumiverse sidebar & Command Palette (Ctrl+K)
+  // 1. Register Drawer Tab in Lumiverse sidebar drawer & Ctrl+K Palette
   const tab = ctx.ui.registerDrawerTab({
     id: 'ai-character-rewriter',
     title: 'AI Character Rewriter',
@@ -9,7 +9,7 @@ export function setup(ctx: SpindleFrontendContext) {
     iconSvg: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>'
   })
 
-  // 2. Inject a Floating Action Button (FAB) on screen for 1-click access
+  // 2. Floating Action Button (FAB) for 1-click opening
   const fab = ctx.dom.inject('body', `
     <button id="ai-rewriter-fab-btn" title="Open AI Character Rewriter" style="
       position: fixed;
@@ -33,11 +33,8 @@ export function setup(ctx: SpindleFrontendContext) {
     </button>
   `)
 
-  const handleFabClick = () => {
-    tab.activate() // Programmatically opens the drawer and switches to this tab
-  }
+  const handleFabClick = () => { tab.activate() }
   fab.addEventListener('click', handleFabClick)
-
   fab.addEventListener('mouseenter', () => { fab.style.transform = 'scale(1.08)' })
   fab.addEventListener('mouseleave', () => { fab.style.transform = 'scale(1.0)' })
 
@@ -84,9 +81,7 @@ export function setup(ctx: SpindleFrontendContext) {
     statusBanner.innerHTML = message
   }
 
-  function hideStatus() {
-    statusBanner.style.display = 'none'
-  }
+  function hideStatus() { statusBanner.style.display = 'none' }
 
   // --- 1. CHARACTER SELECTOR ---
   const charLabel = document.createElement('div')
@@ -440,12 +435,10 @@ export function setup(ctx: SpindleFrontendContext) {
     }
   })
 
-  // Synchronize whenever drawer tab is activated
   const unsubTabActivate = tab.onActivate(() => {
     requestInitData()
   })
 
-  // Initial trigger
   requestInitData()
 
   return () => {
