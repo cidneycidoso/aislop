@@ -59,12 +59,18 @@ spindle.onFrontendMessage(async (payload: any, userId: string) => {
 
       spindle.toast.info("AI is rewriting...")
 
-      const result = await spindle.generate.quiet({
+      // Same defensive treatment as characters.*/chats.* earlier: docs don't
+      // show userId as a generate.quiet() param, but this install clearly
+      // needs it somewhere in the operator-scoped RPC path. JS ignores
+      // properties a function doesn't use, so passing it is harmless if
+      // it's not actually needed.
+      const result = await (spindle.generate.quiet as any)({
         messages: [
           { role: 'system', content: sysPrompt },
           { role: 'user', content: `Original Text:\n${payload.originalText}` }
-        ]
-      })
+        ],
+        userId
+      }, userId)
 
       spindle.sendToFrontend({ type: 'generate_result', result: result.content }, userId)
     } catch (err: any) {
