@@ -11,6 +11,11 @@ const DEFAULT_PROMPTS = {
 
 const activeGenerations = new Map<string, AbortController>()
 
+/** Strips `undefined` (which the Rust binding rejects) by round-tripping through JSON. */
+function sanitize<T>(obj: T): T {
+  return JSON.parse(JSON.stringify(obj ?? {}))
+}
+
 spindle.onFrontendMessage(async (payload: any, userId: string) => {
   const sendError = (error: string) => {
     spindle.sendToFrontend({ type: 'error', error }, userId)
@@ -64,7 +69,6 @@ spindle.onFrontendMessage(async (payload: any, userId: string) => {
       let offset = 0
       const limit = 200
       while (true) {
-        // NOTE: userId passed explicitly for operator-scoped installs
         const { data, total } = await spindle.characters.list({ limit, offset, userId })
         allChars.push(...data)
         if (data.length < limit || allChars.length >= total) break
@@ -79,7 +83,7 @@ spindle.onFrontendMessage(async (payload: any, userId: string) => {
   }
 
   // ------------------------------------------------------------------
-  // RESOLVE ACTIVE CHARACTER  (from route or active chat)
+  // RESOLVE ACTIVE CHARACTER
   // ------------------------------------------------------------------
   else if (payload.type === 'resolve_active_char') {
     try {
@@ -105,7 +109,7 @@ spindle.onFrontendMessage(async (payload: any, userId: string) => {
   }
 
   // ------------------------------------------------------------------
-  // SAVE VERSION  (extensions shallow-merge)
+  // SAVE VERSION
   // ------------------------------------------------------------------
   else if (payload.type === 'save_version') {
     if (!spindle.permissions.has('characters')) {
@@ -116,23 +120,36 @@ spindle.onFrontendMessage(async (payload: any, userId: string) => {
       const char = await spindle.characters.get(payload.characterId, { userId })
       if (!char) { sendError('Character not found'); return }
 
-      const extData = char.extensions?.['char_rewriter'] || { variants: {} }
-      if (!extData.variants) extData.variants = {}
-      if (!extData.variants[payload.category]) extData.variants[payload.category] = []
+      // Build a clean variants map — only real arrays, no undefined values
+      const existingRewriter = char.extensions?.['char_rewriter']
+      const variants: Record<string, string[]> = {}
 
-      const list = extData.variants[payload.category]
-      if (list.length === 0 || list[list.length - 1] !== payload.text) {
-        list.push(payload.text)
-        await spindle.characters.update(payload.characterId, {
-          extensions: { char_rewriter: extData }
-        }, { userId })
+      if (existingRewriter?.variants && typeof existingRewriter.variants === 'object') {
+        for (const [key, val] of Object.entries(existingRewriter.variants)) {
+          if (Array.isArray(val)) {
+            variants[key] = val.filter((v): v is string => typeof v === 'string')
+          }
+        }
       }
+
+      if (!variants[payload.category]) variants[payload.category] = []
+      if (variants[payload.category].length === 0 || variants[payload.category][variants[payload.category].length - 1] !== payload.text) {
+        variants[payload.category].push(payload.text)
+      }
+
+      // Sanitize the full extensions object so no undefined survives
+      const cleanExtensions = sanitize(char.extensions)
+      cleanExtensions['char_rewriter'] = { variants }
+
+      await spindle.characters.update(payload.characterId, {
+        extensions: cleanExtensions
+      }, { userId })
 
       spindle.sendToFrontend({
         type: 'version_saved',
         characterId: payload.characterId,
         category: payload.category,
-        variants: list
+        variants: variants[payload.category]
       }, userId)
     } catch (err: any) {
       spindle.log.error(`Save version error: ${err?.message || err}`)
@@ -152,11 +169,16 @@ spindle.onFrontendMessage(async (payload: any, userId: string) => {
       const char = await spindle.characters.get(payload.characterId, { userId })
       if (!char) { sendError('Character not found'); return }
 
-      const extData = char.extensions?.['char_rewriter'] || { variants: {} }
-      if (extData.variants?.[payload.category]) {
-        extData.variants[payload.category].splice(payload.index, 1)
+      const cleanExtensions = sanitize(char.extensions)
+      const rewriter = cleanExtensions['char_rewriter'] || { variants: {} }
+      if (!rewriter.variants) rewriter.variants = {}
+
+      if (Array.isArray(rewriter.variants[payload.category])) {
+        rewriter.variants[payload.category].splice(payload.index, 1)
+        cleanExtensions['char_rewriter'] = rewriter
+
         await spindle.characters.update(payload.characterId, {
-          extensions: { char_rewriter: extData }
+          extensions: cleanExtensions
         }, { userId })
       }
 
@@ -164,7 +186,7 @@ spindle.onFrontendMessage(async (payload: any, userId: string) => {
         type: 'version_deleted',
         characterId: payload.characterId,
         category: payload.category,
-        variants: extData.variants?.[payload.category] || []
+        variants: rewriter.variants?.[payload.category] || []
       }, userId)
     } catch (err: any) {
       spindle.log.error(`Delete version error: ${err?.message || err}`)
@@ -173,7 +195,7 @@ spindle.onFrontendMessage(async (payload: any, userId: string) => {
   }
 
   // ------------------------------------------------------------------
-  // APPLY VERSION  (write to actual card fields)
+  // APPLY VERSION
   // ------------------------------------------------------------------
   else if (payload.type === 'apply_version') {
     if (!spindle.permissions.has('characters')) {
@@ -187,8 +209,14 @@ spindle.onFrontendMessage(async (payload: any, userId: string) => {
         const char = await spindle.characters.get(payload.characterId, { userId })
         if (!char) { sendError('Character not found'); return }
 
-        const altGreetings = [...(char.alternate_greetings || [])]
+        // Ensure a dense string array — no undefined holes, no nulls
+        const altGreetings: string[] = (char.alternate_greetings || [])
+          .map((g: any) => (typeof g === 'string' ? g : ''))
+
         const idx = parseInt(payload.category.replace('alt_greeting_', ''), 10)
+        while (altGreetings.length < idx) {
+          altGreetings.push('')
+        }
         altGreetings[idx] = payload.text
         updatePayload = { alternate_greetings: altGreetings }
       } else {
