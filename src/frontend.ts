@@ -18,6 +18,7 @@ import type { SpindleFrontendContext } from 'lumiverse-spindle-types'
 async function apiFetch(path: string, options: RequestInit = {}) {
   const res = await fetch(path, {
     credentials: 'same-origin',
+    cache: 'no-store',
     headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
     ...options
   })
@@ -472,7 +473,7 @@ export function setup(ctx: SpindleFrontendContext) {
         updatePayload = { [selectedCategory]: text }
       }
 
-      await apiFetch(`/api/v1/characters/${selectedChar}`, {
+      const patchResponse = await apiFetch(`/api/v1/characters/${selectedChar}`, {
         method: 'PATCH',
         body: JSON.stringify(updatePayload)
       })
@@ -487,7 +488,7 @@ export function setup(ctx: SpindleFrontendContext) {
         ? (verify?.alternate_greetings || [])[parseInt(selectedCategory.replace('alt_greeting_', ''), 10)]
         : verify?.[selectedCategory]
       if (actual !== text) {
-        console.warn('[AI Character Rewriter] Apply did not persist. Sent:', updatePayload, 'Server now has:', verify)
+        console.warn('[AI Character Rewriter] Apply did not persist. Sent:', updatePayload, 'PATCH response body:', patchResponse, 'Follow-up GET:', verify)
         throw new Error(`Server accepted the request but the card wasn't updated. Check the browser console for the raw response — the field name/shape this extension is sending (PATCH ${JSON.stringify(updatePayload)}) may not match what this Lumiverse install expects.`)
       }
       charDetailCache.set(selectedChar, verify)
