@@ -1,11 +1,18 @@
 {
   "version": "1.0.0",
-  "name": "Character AI Rewriter",
-  "identifier": "char_rewriter",
-  "author": "Your Name",
-  "description": "Uses AI to rewrite and enhance specific categories of a character card.",
-  "scope": "user",
-  "permissions": ["characters", "generation", "chats"],
+  "name": "AI Character Rewriter",
+  "identifier": "ai_character_rewriter",
+  "author": "Lumiverse Developer",
+  "github": "https://github.com/example/ai-character-rewriter",
+  "homepage": "https://docs.lumiverse.chat",
+  "description": "An AI-assisted character editing, rewriting, and version history extension for Lumiverse.",
+  "install_scope": "user",
+  "permissions": [
+    "characters",
+    "generation",
+    "chats"
+  ],
   "entry_backend": "dist/backend.js",
-  "entry_frontend": "dist/frontend.js"
+  "entry_frontend": "dist/frontend.js",
+  "minimum_lumiverse_version": "0.1.0"
 }
