@@ -10,33 +10,37 @@ const DEFAULT_PROMPTS = {
 }
 
 // ------------------------------------------------------------------
-// SAFE RPC WRAPPER: Prevents UI hangs if an endpoint drops out
+// SAFE RPC WRAPPER: Exposes exact failure points if an endpoint hangs
 // ------------------------------------------------------------------
-const withTimeout = <T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> => {
-  return new Promise((resolve) => {
+const withTimeout = <T>(promise: Promise<T>, ms: number, label: string): Promise<T> => {
+  return new Promise((resolve, reject) => {
     let done = false
     const timer = setTimeout(() => {
-      if (!done) { done = true; resolve(fallback) }
+      if (!done) { done = true; reject(new Error(`Timeout at ${label} after ${ms}ms`)) }
     }, ms)
     promise.then(res => {
       if (!done) { done = true; clearTimeout(timer); resolve(res) }
     }).catch(err => {
-      if (!done) { done = true; clearTimeout(timer); resolve(fallback) }
+      if (!done) { done = true; clearTimeout(timer); reject(err) }
     })
   })
 }
 
 // ------------------------------------------------------------------
 
-async function fetchAllCharacters(): Promise<any[]> {
+async function fetchAllCharacters(userId: string): Promise<any[]> {
   const allChars: any[] = []
   let offset = 0
-  const limit = 200 // MUST NOT EXCEED 200 (Zod schema strict limit)
+  const limit = 200 
   let hasMore = true
 
   while (hasMore) {
-    // 1.1.0: Characters API natively resolves context. DO NOT pass userId.
-    const chars = await withTimeout(spindle.characters.list({ limit, offset }), 5000, null)
+    // 1. List APIs take options object. userId goes INSIDE the options bag.
+    const chars = await withTimeout(
+      (spindle.characters.list as any)({ limit, offset, userId }), 
+      5000, 
+      'characters.list'
+    )
     
     if (!chars || !chars.data || chars.data.length === 0) break
     
@@ -62,28 +66,28 @@ async function checkAndSendInitData(userId: string, routeType?: string | null, r
       return
     }
 
-    const charsData = await fetchAllCharacters()
+    const charsData = await fetchAllCharacters(userId)
     
-    // UserStorage explicitly requires userId inside its options object
-    const prompts = await withTimeout(
-      spindle.userStorage.getJson('prompts.json', { fallback: DEFAULT_PROMPTS, userId }), 
-      2000, 
-      DEFAULT_PROMPTS
-    )
+    // 2. Storage APIs take options object. userId goes INSIDE the options bag.
+    const prompts = await spindle.userStorage.getJson('prompts.json', { fallback: DEFAULT_PROMPTS, userId })
     
     let activeCharId = null
     if (routeType === 'characters' && routeId) {
       activeCharId = routeId
     } else if (routeType === 'chat' && routeId && hasChats) {
-      // Chats API requires userId as a trailing argument
-      const chat = await withTimeout((spindle.chats.get as any)(routeId, userId), 2000, null)
-      if (chat) activeCharId = chat.character_id 
+      try {
+        // 3. Entity getters have no options bag. userId is a trailing STRING.
+        const chat = await withTimeout((spindle.chats.get as any)(routeId, userId), 3000, 'chats.get')
+        if (chat) activeCharId = chat.character_id 
+      } catch (e) { spindle.log.warn(`chats.get failed: ${e}`) }
     }
     
     if (!activeCharId && hasChats) {
-      // Active Chat requires userId as a trailing argument
-      const activeChat = await withTimeout((spindle.chats.getActive as any)(userId), 2000, null)
-      if (activeChat) activeCharId = activeChat.character_id
+      try {
+        // 3. Entity getters have no options bag. userId is a trailing STRING.
+        const activeChat = await withTimeout((spindle.chats.getActive as any)(userId), 3000, 'chats.getActive')
+        if (activeChat) activeCharId = activeChat.character_id
+      } catch (e) { spindle.log.warn(`chats.getActive failed: ${e}`) }
     }
     
     spindle.sendToFrontend({ 
@@ -95,6 +99,7 @@ async function checkAndSendInitData(userId: string, routeType?: string | null, r
     
   } catch (err: any) {
     spindle.log.error(`Init error: ${err.message}`)
+    // This will vividly print exactly what failed to load directly on the extension UI
     spindle.sendToFrontend({ type: 'init_error', error: err.message }, userId)
   }
 }
@@ -106,28 +111,37 @@ spindle.onFrontendMessage(async (payload: any, userId: string) => {
 
   else if (payload.type === 'get_char_text') {
     if (!spindle.permissions.has('characters')) return
-    
-    const char = await withTimeout(spindle.characters.get(payload.characterId), 3000, null)
-    if (char) {
-      let text = ""
-      if (payload.category.startsWith('alt_greeting_')) {
-        const idx = parseInt(payload.category.replace('alt_greeting_', ''), 10)
-        text = (char.alternate_greetings || [])[idx] || ""
-      } else {
-        text = char[payload.category as keyof typeof char] || ""
+    try {
+      // 3. Entity getters have no options bag. userId is a trailing STRING.
+      const char = await (spindle.characters.get as any)(payload.characterId, userId)
+      if (char) {
+        let text = ""
+        if (payload.category.startsWith('alt_greeting_')) {
+          const idx = parseInt(payload.category.replace('alt_greeting_', ''), 10)
+          text = (char.alternate_greetings || [])[idx] || ""
+        } else {
+          text = char[payload.category as keyof typeof char] || ""
+        }
+
+        const extData = char.extensions?.['char_rewriter'] || {}
+        const variants = extData.variants?.[payload.category] || []
+
+        spindle.sendToFrontend({ type: 'char_text_result', text, variants }, userId)
       }
-
-      const extData = char.extensions?.['char_rewriter'] || {}
-      const variants = extData.variants?.[payload.category] || []
-
-      spindle.sendToFrontend({ type: 'char_text_result', text, variants }, userId)
+    } catch (err: any) {
+      spindle.log.error(`Text fetch error: ${err.message}`)
     }
   }
 
   else if (payload.type === 'save_prompts') {
-    await withTimeout(spindle.userStorage.setJson('prompts.json', payload.prompts, { userId }), 2000, null)
-    spindle.toast.success("Instructions updated!")
-    spindle.sendToFrontend({ type: 'prompts_updated', prompts: payload.prompts }, userId)
+    try {
+      // 2. Storage APIs take options object. userId goes INSIDE the options bag.
+      await spindle.userStorage.setJson('prompts.json', payload.prompts, { userId })
+      spindle.toast.success("Instructions updated!")
+      spindle.sendToFrontend({ type: 'prompts_updated', prompts: payload.prompts }, userId)
+    } catch (err: any) {
+      spindle.log.error(`Save prompts error: ${err.message}`)
+    }
   }
 
   else if (payload.type === 'generate') {
@@ -136,97 +150,107 @@ spindle.onFrontendMessage(async (payload: any, userId: string) => {
       spindle.sendToFrontend({ type: 'generate_failed' }, userId)
       return
     }
-    
-    const prompts = await withTimeout(
-      spindle.userStorage.getJson('prompts.json', { fallback: DEFAULT_PROMPTS, userId }), 
-      2000, 
-      DEFAULT_PROMPTS
-    )
-    const promptCat = payload.category.startsWith('alt_greeting_') ? 'first_mes' : payload.category
-    const sysPrompt = `${prompts.base}\n\nCategory guidance:\n${prompts[promptCat] || ""}`
+    try {
+      const prompts = await spindle.userStorage.getJson('prompts.json', { fallback: DEFAULT_PROMPTS, userId })
+      const promptCat = payload.category.startsWith('alt_greeting_') ? 'first_mes' : payload.category
+      const sysPrompt = `${prompts.base}\n\nCategory guidance:\n${prompts[promptCat] || ""}`
 
-    spindle.toast.info("AI is rewriting...")
-    
-    // Generate endpoints require userId as a trailing argument
-    const result = await withTimeout((spindle.generate.quiet as any)({
-      messages: [
-        { role: 'system', content: sysPrompt },
-        { role: 'user', content: `Original Text:\n${payload.originalText}` }
-      ]
-    }, userId), 60000, null) // 60s timeout for LLM
+      spindle.toast.info("AI is rewriting...")
+      
+      // 4. Generate payload is not an options bag. userId is a trailing STRING.
+      const result = await (spindle.generate.quiet as any)({
+        messages: [
+          { role: 'system', content: sysPrompt },
+          { role: 'user', content: `Original Text:\n${payload.originalText}` }
+        ]
+      }, userId) 
 
-    if (result) {
-      const genText = result.text || result.content || ""
+      const genText = result?.text || result?.content || ""
       spindle.sendToFrontend({ type: 'generate_result', result: genText }, userId)
-    } else {
-      spindle.toast.error(`Generation failed or timed out.`)
+    } catch (err: any) {
+      spindle.toast.error(`Generation failed: ${err.message}`)
       spindle.sendToFrontend({ type: 'generate_failed' }, userId)
     }
   }
 
   else if (payload.type === 'save_version') {
     if (!spindle.permissions.has('characters')) return
-    const char = await withTimeout(spindle.characters.get(payload.characterId), 2000, null)
-    if (!char) return
+    try {
+      const char = await (spindle.characters.get as any)(payload.characterId, userId)
+      if (!char) throw new Error("Character not found")
 
-    const extData = char.extensions?.['char_rewriter'] || { variants: {} }
-    if (!extData.variants) extData.variants = {}
-    if (!extData.variants[payload.category]) extData.variants[payload.category] = []
-    
-    const currentList = extData.variants[payload.category]
-    if (currentList.length === 0 || currentList[currentList.length - 1] !== payload.text) {
-      extData.variants[payload.category].push(payload.text)
+      const extData = char.extensions?.['char_rewriter'] || { variants: {} }
+      if (!extData.variants) extData.variants = {}
+      if (!extData.variants[payload.category]) extData.variants[payload.category] = []
       
-      await withTimeout(spindle.characters.update(payload.characterId, {
-        extensions: { 'char_rewriter': extData }
-      }), 2000, null)
-      
-      spindle.toast.success("Saved to draft history!")
-    } else {
-      spindle.toast.info("This exact version is already saved.")
+      const currentList = extData.variants[payload.category]
+      if (currentList.length === 0 || currentList[currentList.length - 1] !== payload.text) {
+        extData.variants[payload.category].push(payload.text)
+        
+        // 5. Entity mutations have no options bag. userId is a trailing STRING.
+        await (spindle.characters.update as any)(payload.characterId, {
+          extensions: { 'char_rewriter': extData }
+        }, userId)
+        
+        spindle.toast.success("Saved to draft history!")
+      } else {
+        spindle.toast.info("This exact version is already saved.")
+      }
+
+      spindle.sendToFrontend({ type: 'save_version_success', variants: extData.variants[payload.category] }, userId)
+    } catch (err: any) {
+      spindle.log.error(`Save version error: ${err.message}`)
     }
-
-    spindle.sendToFrontend({ type: 'save_version_success', variants: extData.variants[payload.category] }, userId)
   }
 
   else if (payload.type === 'delete_version') {
     if (!spindle.permissions.has('characters')) return
-    const char = await withTimeout(spindle.characters.get(payload.characterId), 2000, null)
-    if (!char) return
+    try {
+      const char = await (spindle.characters.get as any)(payload.characterId, userId)
+      if (!char) throw new Error("Character not found")
 
-    const extData = char.extensions?.['char_rewriter'] || { variants: {} }
-    if (extData.variants?.[payload.category]) {
-      extData.variants[payload.category].splice(payload.index, 1)
-      
-      await withTimeout(spindle.characters.update(payload.characterId, {
-        extensions: { 'char_rewriter': extData }
-      }), 2000, null)
-      
-      spindle.toast.success("Draft version deleted.")
+      const extData = char.extensions?.['char_rewriter'] || { variants: {} }
+      if (extData.variants?.[payload.category]) {
+        extData.variants[payload.category].splice(payload.index, 1)
+        
+        // 5. Entity mutations have no options bag. userId is a trailing STRING.
+        await (spindle.characters.update as any)(payload.characterId, {
+          extensions: { 'char_rewriter': extData }
+        }, userId)
+        
+        spindle.toast.success("Draft version deleted.")
+      }
+
+      const updatedList = extData.variants?.[payload.category] || []
+      spindle.sendToFrontend({ type: 'save_version_success', variants: updatedList }, userId)
+    } catch (err: any) {
+      spindle.log.error(`Delete version error: ${err.message}`)
     }
-
-    const updatedList = extData.variants?.[payload.category] || []
-    spindle.sendToFrontend({ type: 'save_version_success', variants: updatedList }, userId)
   }
 
   else if (payload.type === 'apply_version') {
     if (!spindle.permissions.has('characters')) return
-    const char = await withTimeout(spindle.characters.get(payload.characterId), 2000, null)
-    if (!char) return
+    try {
+      let updatePayload: any = {}
+      const char = await (spindle.characters.get as any)(payload.characterId, userId)
+      if (!char) throw new Error("Character not found")
 
-    let updatePayload: any = {}
-    if (payload.category.startsWith('alt_greeting_')) {
-      const altGreetings = [...(char.alternate_greetings || [])]
-      const idx = parseInt(payload.category.replace('alt_greeting_', ''), 10)
-      altGreetings[idx] = payload.text
-      updatePayload = { alternate_greetings: altGreetings }
-    } else {
-      updatePayload = { [payload.category]: payload.text }
+      if (payload.category.startsWith('alt_greeting_')) {
+        const altGreetings = [...(char.alternate_greetings || [])]
+        const idx = parseInt(payload.category.replace('alt_greeting_', ''), 10)
+        altGreetings[idx] = payload.text
+        updatePayload = { alternate_greetings: altGreetings }
+      } else {
+        updatePayload = { [payload.category]: payload.text }
+      }
+
+      // 5. Entity mutations have no options bag. userId is a trailing STRING.
+      await (spindle.characters.update as any)(payload.characterId, updatePayload, userId)
+      
+      spindle.toast.success("Card updated successfully!")
+      spindle.sendToFrontend({ type: 'apply_success', text: payload.text }, userId)
+    } catch (err: any) {
+      spindle.log.error(`Apply error: ${err.message}`)
     }
-
-    await withTimeout(spindle.characters.update(payload.characterId, updatePayload), 2000, null)
-    
-    spindle.toast.success("Card updated successfully!")
-    spindle.sendToFrontend({ type: 'apply_success', text: payload.text }, userId)
   }
 })
