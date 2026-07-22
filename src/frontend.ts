@@ -8,10 +8,12 @@ export function setup(ctx: SpindleFrontendContext) {
     iconSvg: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>'
   })
 
+  // Permission warning UI
   const permissionWarning = document.createElement('div')
   permissionWarning.style.cssText = 'display:none; padding:16px; margin:16px; background:rgba(239,68,68,0.1); border:1px solid rgba(239,68,68,0.25); border-radius:var(--lumiverse-radius); color:var(--lumiverse-danger); font-size:13px; line-height:1.5;'
   tab.root.appendChild(permissionWarning)
 
+  // Main interaction container
   const container = document.createElement('div')
   container.style.cssText = 'display:flex;flex-direction:column;gap:16px;padding:16px;'
   tab.root.appendChild(container)
@@ -23,7 +25,7 @@ export function setup(ctx: SpindleFrontendContext) {
   
   let originalTextRaw = ''
   let categoryVariants: string[] = []
-  let selectedVersionKey = 'live' // 'live' or string index '0', '1', etc.
+  let selectedVersionKey = 'live' 
   
   const activeMounts: any[] = []
 
@@ -36,7 +38,7 @@ export function setup(ctx: SpindleFrontendContext) {
     }
   }
 
-  // --- 1. CHARACTER DROPDOWN ---
+  // --- 1. ALWAYS MOUNTED CHARACTER DROPDOWN ---
   const charSlot = document.createElement('div')
   container.appendChild(charSlot)
   const charSelect = ctx.components.mountSelect(charSlot, {
@@ -85,7 +87,7 @@ export function setup(ctx: SpindleFrontendContext) {
     catSelect.update({ options, value: selectedCategory })
   }
 
-  // --- 3. AI SYSTEM INSTRUCTIONS ---
+  // --- 3. PROMPTS CONFIGURATION ---
   const promptSlot = document.createElement('div')
   container.appendChild(promptSlot)
   const promptSection = ctx.components.mountCollapsibleSection(promptSlot, {
@@ -103,13 +105,13 @@ export function setup(ctx: SpindleFrontendContext) {
   savePromptsBtn.onclick = () => ctx.sendToBackend({ type: 'save_prompts', prompts: currentPrompts })
   promptSection.body.appendChild(savePromptsBtn)
 
-  // --- 4. VERSION MANAGER & CURRENT PREVIEW ---
+  // --- 4. CURRENT TEXT VIEWER & VARIANT PICKER ---
   const currentTextLabel = document.createElement('div')
   currentTextLabel.style.cssText = 'font-weight: 500; font-size: 13px; color: var(--lumiverse-text-dim); margin-bottom: -8px;'
   currentTextLabel.textContent = "Version History / Preview:"
   container.appendChild(currentTextLabel)
 
-  // Selector to cycle drafts
+  // Variant Selector
   const variantSelectSlot = document.createElement('div')
   variantSelectSlot.style.display = 'none'
   container.appendChild(variantSelectSlot)
@@ -124,20 +126,20 @@ export function setup(ctx: SpindleFrontendContext) {
       } else {
         const idx = parseInt(v, 10)
         currentTextInput.update({ value: categoryVariants[idx] || '' })
-        deleteVersionBtn.style.display = 'block' // Show delete only if not 'live'
+        deleteVersionBtn.style.display = 'block' 
       }
     }
   })
   activeMounts.push(variantSelect)
 
   const currentTextSlot = document.createElement('div')
-  container.appendChild(currentTextSlot)
+  currentTextSlot.appendChild(currentTextSlot)
   const currentTextInput = ctx.components.mountTextArea(currentTextSlot, {
     value: '', rows: 5, placeholder: 'Select a character card above...'
   })
   activeMounts.push(currentTextInput)
 
-  // Row for Current Text Actions
+  // Actions row
   const currentActionsRow = document.createElement('div')
   currentActionsRow.style.cssText = 'display:flex;gap:8px;margin-top:-8px;'
   container.appendChild(currentActionsRow)
@@ -177,7 +179,7 @@ export function setup(ctx: SpindleFrontendContext) {
   }
   container.appendChild(deleteVersionBtn)
 
-  // --- 5. AI REWRITER ENGINE ---
+  // --- 5. AI GENERATOR ---
   const aiDivider = document.createElement('div')
   aiDivider.style.cssText = 'border-top: 1px solid var(--lumiverse-border); margin: 8px 0;'
   container.appendChild(aiDivider)
@@ -290,7 +292,7 @@ export function setup(ctx: SpindleFrontendContext) {
       generateBtn.textContent = 'Rewrite with AI'
       generateBtn.disabled = false
       resultInput.update({ value: payload.result })
-      saveResultBtn.style.display = 'block' // Show save-result button
+      saveResultBtn.style.display = 'block'
     }
     
     if (payload.type === 'generate_failed') {
@@ -298,11 +300,9 @@ export function setup(ctx: SpindleFrontendContext) {
       generateBtn.disabled = false
     }
 
-    // New variant successfully added to history
     if (payload.type === 'save_version_success') {
       categoryVariants = payload.variants || []
       
-      // Auto-select the newly added version
       if (categoryVariants.length > 0) {
         selectedVersionKey = (categoryVariants.length - 1).toString()
         currentTextInput.update({ value: categoryVariants[categoryVariants.length - 1] })
@@ -313,26 +313,25 @@ export function setup(ctx: SpindleFrontendContext) {
 
       renderVariantsDropdown()
       
-      // Hide result saver after saving
       resultInput.update({ value: '' })
       saveResultBtn.style.display = 'none'
     }
 
-    // Overwrote the actual active card successfully
     if (payload.type === 'apply_success') {
       originalTextRaw = payload.text
-      selectedVersionKey = 'live' // Snap dropdown back to show it matches live text
+      selectedVersionKey = 'live'
       
       renderVariantsDropdown()
       currentTextInput.update({ value: originalTextRaw })
       
-      // Refresh list to sync card text
       requestInitData()
     }
   })
 
+  // FIXED: Supports both modern clean paths (/chat/abc) and legacy hash routing (/index.html#/chat/abc)
   function requestInitData() {
-    const match = window.location.hash.match(/\/(characters|chat)\/([a-zA-Z0-9_-]+)/)
+    const currentUrl = window.location.pathname + window.location.hash
+    const match = currentUrl.match(/\/(characters|chat)\/([a-zA-Z0-9_-]+)/)
     ctx.sendToBackend({ type: 'get_init_data', routeType: match ? match[1] : null, routeId: match ? match[2] : null })
   }
 
