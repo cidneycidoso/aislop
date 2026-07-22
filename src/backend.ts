@@ -39,132 +39,62 @@ function buildCategoryUpdatePayload(char: any, category: string, newText: string
   }
 }
 
-// Storage helpers using userStorage with fallbacks for both options and positional signatures
-async function loadPrompts(userId?: string): Promise<{ base: string }> {
+// Storage helpers
+async function loadPrompts(): Promise<{ base: string }> {
   try {
-    const opts = userId ? { userId } : {}
-    if (typeof (spindle.userStorage as any)?.getJson === 'function') {
-      const data = await (spindle.userStorage as any).getJson('prompts.json', opts)
-      return data || DEFAULT_PROMPTS
-    }
-    const data = await spindle.userStorage.read('prompts.json', userId as any)
+    const data = await spindle.storage.read('prompts.json')
     return JSON.parse(data)
   } catch {
     return DEFAULT_PROMPTS
   }
 }
 
-async function savePrompts(prompts: { base: string }, userId?: string): Promise<void> {
-  const opts = userId ? { userId } : {}
-  if (typeof (spindle.userStorage as any)?.setJson === 'function') {
-    await (spindle.userStorage as any).setJson('prompts.json', prompts, opts)
-  } else {
-    await spindle.userStorage.write('prompts.json', JSON.stringify(prompts, null, 2), userId as any)
-  }
+async function savePrompts(prompts: { base: string }): Promise<void> {
+  await spindle.storage.write('prompts.json', JSON.stringify(prompts, null, 2))
 }
 
-async function loadVariants(characterId: string, category: string, userId?: string): Promise<string[]> {
+async function loadVariants(characterId: string, category: string): Promise<string[]> {
   try {
-    const filename = `variants_${characterId}.json`
-    const opts = userId ? { userId } : {}
-    let store: Record<string, string[]> = {}
-    if (typeof (spindle.userStorage as any)?.getJson === 'function') {
-      store = (await (spindle.userStorage as any).getJson(filename, opts)) || {}
-    } else {
-      const data = await spindle.userStorage.read(filename, userId as any)
-      store = JSON.parse(data)
-    }
+    const data = await spindle.storage.read(`variants_${characterId}.json`)
+    const store = JSON.parse(data)
     return store[category] || []
   } catch {
     return []
   }
 }
 
-async function saveVariants(characterId: string, category: string, variants: string[], userId?: string): Promise<void> {
-  const filename = `variants_${characterId}.json`
+async function saveVariants(characterId: string, category: string, variants: string[]): Promise<void> {
   let store: Record<string, string[]> = {}
-  const opts = userId ? { userId } : {}
   try {
-    if (typeof (spindle.userStorage as any)?.getJson === 'function') {
-      store = (await (spindle.userStorage as any).getJson(filename, opts)) || {}
-    } else {
-      const data = await spindle.userStorage.read(filename, userId as any)
-      store = JSON.parse(data)
-    }
+    const data = await spindle.storage.read(`variants_${characterId}.json`)
+    store = JSON.parse(data)
   } catch {
     store = {}
   }
   store[category] = variants
-  if (typeof (spindle.userStorage as any)?.setJson === 'function') {
-    await (spindle.userStorage as any).setJson(filename, store, opts)
-  } else {
-    await spindle.userStorage.write(filename, JSON.stringify(store, null, 2), userId as any)
-  }
-}
-
-// Universal API execution helpers (supporting options object / userId injection)
-async function getCharactersList(userId?: string) {
-  const options: any = { limit: 200 }
-  if (userId) options.userId = userId
-  try {
-    return await spindle.characters.list(options, userId as any)
-  } catch {
-    return await spindle.characters.list(options)
-  }
-}
-
-async function getCharacter(characterId: string, userId?: string) {
-  try {
-    return await (spindle.characters as any).get(characterId, { userId })
-  } catch {
-    return await spindle.characters.get(characterId, userId as any)
-  }
-}
-
-async function updateCharacter(characterId: string, updates: any, userId?: string) {
-  try {
-    return await (spindle.characters as any).update(characterId, updates, { userId })
-  } catch {
-    return await spindle.characters.update(characterId, updates, userId as any)
-  }
-}
-
-async function getChat(chatId: string, userId?: string) {
-  try {
-    return await (spindle.chats as any).get(chatId, { userId })
-  } catch {
-    return await spindle.chats.get(chatId, userId as any)
-  }
-}
-
-function hasPermission(permission: string, userId?: string): boolean {
-  try {
-    return spindle.permissions.has(permission as any, userId as any)
-  } catch {
-    return spindle.permissions.has(permission as any)
-  }
+  await spindle.storage.write(`variants_${characterId}.json`, JSON.stringify(store, null, 2))
 }
 
 // IPC Listener
 spindle.onFrontendMessage(async (payload: any, userId: string) => {
   // 1. Initial Data Request
   if (payload.type === 'get_init_data') {
-    if (!hasPermission('characters', userId)) {
+    if (!spindle.permissions.has('characters')) {
       spindle.sendToFrontend({ type: 'permission_status' }, userId)
       return
     }
 
     try {
-      const res = await getCharactersList(userId)
-      const chars = res?.data || []
-      const prompts = await loadPrompts(userId)
+      const res = await spindle.characters.list({ limit: 200 })
+      const chars = Array.isArray(res) ? res : (res?.data || [])
+      const prompts = await loadPrompts()
 
       let activeCharId = ''
       if (payload.routeType === 'characters' && payload.routeId) {
         activeCharId = payload.routeId
-      } else if (payload.routeType === 'chat' && payload.routeId && hasPermission('chats', userId)) {
+      } else if (payload.routeType === 'chat' && payload.routeId && spindle.permissions.has('chats')) {
         try {
-          const chat = await getChat(payload.routeId, userId)
+          const chat = await spindle.chats.get(payload.routeId)
           if (chat?.character_id) {
             activeCharId = chat.character_id
           }
@@ -184,6 +114,7 @@ spindle.onFrontendMessage(async (payload: any, userId: string) => {
         activeCharId
       }, userId)
     } catch (err: any) {
+      spindle.log.error(`get_init_data error: ${err.message}`)
       spindle.sendToFrontend({
         type: 'init_error',
         error: err.message || 'Failed to fetch characters from server'
@@ -196,13 +127,13 @@ spindle.onFrontendMessage(async (payload: any, userId: string) => {
   if (payload.type === 'get_char_text') {
     const { characterId, category } = payload
     try {
-      const char = await getCharacter(characterId, userId)
+      const char = await spindle.characters.get(characterId)
       if (!char) {
         spindle.sendToFrontend({ type: 'char_text_result', text: '', variants: [] }, userId)
         return
       }
       const text = getCategoryText(char, category)
-      const variants = await loadVariants(characterId, category, userId)
+      const variants = await loadVariants(characterId, category)
       spindle.sendToFrontend({ type: 'char_text_result', text, variants }, userId)
     } catch (err: any) {
       spindle.sendToFrontend({ type: 'char_text_result', text: `Error: ${err.message}`, variants: [] }, userId)
@@ -212,7 +143,7 @@ spindle.onFrontendMessage(async (payload: any, userId: string) => {
 
   // 3. Save Prompt Configuration
   if (payload.type === 'save_prompts') {
-    await savePrompts(payload.prompts, userId)
+    await savePrompts(payload.prompts)
     spindle.sendToFrontend({ type: 'prompts_updated', prompts: payload.prompts }, userId)
     return
   }
@@ -220,9 +151,9 @@ spindle.onFrontendMessage(async (payload: any, userId: string) => {
   // 4. Save Version Draft
   if (payload.type === 'save_version') {
     const { characterId, category, text } = payload
-    const variants = await loadVariants(characterId, category, userId)
+    const variants = await loadVariants(characterId, category)
     variants.push(text)
-    await saveVariants(characterId, category, variants, userId)
+    await saveVariants(characterId, category, variants)
     spindle.sendToFrontend({ type: 'save_version_success', variants }, userId)
     return
   }
@@ -230,10 +161,10 @@ spindle.onFrontendMessage(async (payload: any, userId: string) => {
   // 5. Delete Version Draft
   if (payload.type === 'delete_version') {
     const { characterId, category, index } = payload
-    let variants = await loadVariants(characterId, category, userId)
+    let variants = await loadVariants(characterId, category)
     if (index >= 0 && index < variants.length) {
       variants.splice(index, 1)
-      await saveVariants(characterId, category, variants, userId)
+      await saveVariants(characterId, category, variants)
     }
     spindle.sendToFrontend({ type: 'save_version_success', variants }, userId)
     return
@@ -243,10 +174,10 @@ spindle.onFrontendMessage(async (payload: any, userId: string) => {
   if (payload.type === 'apply_version') {
     const { characterId, category, text } = payload
     try {
-      const char = await getCharacter(characterId, userId)
+      const char = await spindle.characters.get(characterId)
       if (char) {
         const updatePayload = buildCategoryUpdatePayload(char, category, text)
-        await updateCharacter(characterId, updatePayload, userId)
+        await spindle.characters.update(characterId, updatePayload)
         spindle.sendToFrontend({ type: 'apply_success', text }, userId)
       }
     } catch (err: any) {
@@ -257,29 +188,21 @@ spindle.onFrontendMessage(async (payload: any, userId: string) => {
 
   // 7. AI Text Generation
   if (payload.type === 'generate') {
-    if (!hasPermission('generation', userId)) {
+    if (!spindle.permissions.has('generation')) {
       spindle.sendToFrontend({ type: 'generate_failed', error: 'Missing generation permission' }, userId)
       return
     }
 
     try {
       const { category, originalText } = payload
-      const prompts = await loadPrompts(userId)
+      const prompts = await loadPrompts()
 
-      const genInput: any = {
+      const result = await spindle.generate.quiet({
         messages: [
           { role: 'system', content: prompts.base },
           { role: 'user', content: `Target Field Category: ${category}\n\nOriginal Character Text:\n${originalText}` }
         ]
-      }
-      if (userId) genInput.userId = userId
-
-      let result
-      try {
-        result = await spindle.generate.quiet(genInput, userId as any)
-      } catch {
-        result = await spindle.generate.quiet(genInput)
-      }
+      })
 
       spindle.sendToFrontend({
         type: 'generate_result',
