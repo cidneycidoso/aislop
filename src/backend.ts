@@ -17,6 +17,11 @@ const DEFAULT_PROMPTS = {
   mes_example: "Format as dialogue history. Focus on capturing the exact speech patterns, tone, and formatting of the character."
 }
 
+// Tracks each user's in-flight generation so a cancel request only ever
+// aborts *that* user's own stream — important on an operator-scoped install
+// where this backend instance is shared across everyone using the extension.
+const activeGenerations = new Map<string, AbortController>()
+
 spindle.onFrontendMessage(async (payload: any, userId: string) => {
   if (payload.type === 'get_status') {
     // Everything wrapped in try/catch — always answer, never leave the
@@ -52,30 +57,50 @@ spindle.onFrontendMessage(async (payload: any, userId: string) => {
       spindle.sendToFrontend({ type: 'generate_failed' }, userId)
       return
     }
+
+    const controller = new AbortController()
+    activeGenerations.set(userId, controller)
+
     try {
       const prompts = await spindle.userStorage.getJson('prompts.json', { fallback: DEFAULT_PROMPTS, userId })
       const promptCat = payload.category.startsWith('alt_greeting_') ? 'first_mes' : payload.category
       const sysPrompt = `${prompts.base}\n\nCategory guidance:\n${prompts[promptCat] || ""}`
 
-      spindle.toast.info("AI is rewriting...")
-
-      // Same defensive treatment as characters.*/chats.* earlier: docs don't
-      // show userId as a generate.quiet() param, but this install clearly
-      // needs it somewhere in the operator-scoped RPC path. JS ignores
-      // properties a function doesn't use, so passing it is harmless if
-      // it's not actually needed.
-      const result = await (spindle.generate.quiet as any)({
+      // Same defensive treatment as characters.*/chats.* and the old
+      // generate.quiet() call needed: docs don't list userId as a
+      // quietStream() param, but this install has repeatedly needed it
+      // passed explicitly for operator-scoped calls the docs claim resolve
+      // automatically. Harmless extra property if it's not actually used.
+      for await (const chunk of (spindle.generate.quietStream as any)({
         messages: [
           { role: 'system', content: sysPrompt },
           { role: 'user', content: `Original Text:\n${payload.originalText}` }
         ],
+        signal: controller.signal,
         userId
-      }, userId)
-
-      spindle.sendToFrontend({ type: 'generate_result', result: result.content }, userId)
+      })) {
+        if (chunk.type === 'token') {
+          spindle.sendToFrontend({ type: 'generate_token', token: chunk.token }, userId)
+        } else if (chunk.type === 'done') {
+          spindle.sendToFrontend({ type: 'generate_done', result: chunk.content }, userId)
+        }
+      }
     } catch (err: any) {
-      spindle.toast.error(`Generation failed: ${err.message}`)
-      spindle.sendToFrontend({ type: 'generate_failed' }, userId)
+      if (err?.name === 'AbortError') {
+        spindle.sendToFrontend({ type: 'generate_cancelled' }, userId)
+      } else {
+        spindle.toast.error(`Generation failed: ${err.message}`)
+        spindle.sendToFrontend({ type: 'generate_failed', error: err?.message || String(err) }, userId)
+      }
+    } finally {
+      activeGenerations.delete(userId)
     }
+  }
+
+  else if (payload.type === 'generate_cancel') {
+    const controller = activeGenerations.get(userId)
+    if (controller) controller.abort()
+    // No response needed here — the generate loop above's catch block
+    // sends 'generate_cancelled' once the abort actually lands.
   }
 })
