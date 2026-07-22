@@ -1,99 +1,5 @@
 import type { SpindleFrontendContext } from 'lumiverse-spindle-types'
 
-// --- REST helper --------------------------------------------------------
-// Character reading/writing now goes straight to Lumiverse's own REST API
-// instead of through the Spindle backend RPC bridge. A same-origin fetch()
-// here rides on the browser's own logged-in session, so there's no
-// operator-scoped "which user is this?" ambiguity to resolve — it's always
-// exactly the person looking at the screen.
-//
-// NOTE: these endpoint paths/shapes are inferred from REST conventions
-// consistent with the rest of Lumiverse's API (e.g. /api/v1/images/:id,
-// already used below for avatars) and the documented Spindle character DTO
-// shape. They aren't in the public extension-facing REST docs. If any of
-// these 404 or come back in an unexpected shape on your install, open the
-// Characters page in Lumiverse itself, check the Network tab, and adjust
-// the paths/method below to match — everything that touches these paths is
-// isolated in the functions right below this comment.
-async function apiFetch(path: string, options: RequestInit = {}) {
-  const res = await fetch(path, {
-    credentials: 'same-origin',
-    cache: 'no-store',
-    headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
-    ...options
-  })
-  const text = await res.text()
-  let body: any = null
-  if (text) {
-    try { body = JSON.parse(text) } catch { body = text }
-  }
-  if (!res.ok) {
-    const detail = (body && typeof body === 'object' && body.error) ? body.error : (typeof body === 'string' && body ? body : res.statusText)
-    throw new Error(`${res.status} ${detail}`)
-  }
-  return body
-}
-
-async function fetchAllCharactersFromApi(): Promise<any[]> {
-  const byId = new Map<string, any>()
-  let offset = 0
-  const limit = 200
-  let page = 1
-  const MAX_PAGES = 100 // safety cap — 20,000 characters — never spin forever
-
-  while (page <= MAX_PAGES) {
-    // Send both offset- and page-style params. Extra query params a REST
-    // endpoint doesn't recognize are just ignored, so this is safe either
-    // way and covers both common pagination conventions without needing to
-    // know which one this install actually implements.
-    const result = await apiFetch(`/api/v1/characters?limit=${limit}&offset=${offset}&page=${page}`)
-    const data = Array.isArray(result) ? result : (result?.data ?? [])
-    const total = Array.isArray(result) ? undefined : result?.total
-
-    if (!data.length) break
-
-    const beforeCount = byId.size
-    for (const c of data) byId.set(c.id, c)
-    const newCount = byId.size - beforeCount
-
-    // If this "next page" came back with nothing we haven't already seen,
-    // the server isn't respecting offset/page — stop instead of looping.
-    if (newCount === 0) break
-
-    if (data.length < limit || (typeof total === 'number' && byId.size >= total)) {
-      break
-    }
-
-    offset += limit
-    page += 1
-  }
-
-  return Array.from(byId.values())
-}
-
-async function resolveActiveCharId(routeType: string | null, routeId: string | null): Promise<string | null> {
-  if (routeType === 'characters' && routeId) return routeId
-
-  if (routeType === 'chat' && routeId) {
-    try {
-      const chat = await apiFetch(`/api/v1/chats/${routeId}`)
-      if (chat?.character_id) return chat.character_id
-    } catch (err) {
-      console.warn('[AI Character Rewriter] Could not resolve character from chat route:', err)
-    }
-  }
-
-  try {
-    const activeChat = await apiFetch('/api/v1/chats/active')
-    if (activeChat?.character_id) return activeChat.character_id
-  } catch {
-    // No active chat, or this endpoint doesn't exist on this install —
-    // non-fatal, we just fall back to the first character in the list.
-  }
-
-  return null
-}
-
 export function setup(ctx: SpindleFrontendContext) {
   const tab = ctx.ui.registerDrawerTab({
     id: 'ai-rewriter',
@@ -102,10 +8,7 @@ export function setup(ctx: SpindleFrontendContext) {
     iconSvg: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>'
   })
 
-  // Re-sync character list automatically whenever tab is clicked [2.3.1]
-  const unsubTabActivate = tab.onActivate(() => {
-    loadEverything()
-  })
+  const unsubTabActivate = tab.onActivate(() => { loadEverything() })
 
   // Permission warning UI
   const permissionWarning = document.createElement('div')
@@ -121,22 +24,9 @@ export function setup(ctx: SpindleFrontendContext) {
   let selectedCategory = 'description'
   let currentPrompts: any = {}
   let fullCharList: any[] = []
-  let hasGeneration = true // assume true until status_result says otherwise
-
-  // Full character detail (including `extensions`) is fetched and cached
-  // separately from `fullCharList`. The list endpoint used to populate the
-  // character dropdown returns a slimmer DTO that omits `extensions` —
-  // using that slim object as the merge base for saving/deleting/applying
-  // versions was silently wiping out previously saved variants for every
-  // other category on each save. All version read/write paths below go
-  // through getCharDetail() instead of `fullCharList.find(...)`.
-  const charDetailCache = new Map<string, any>()
-  async function getCharDetail(id: string): Promise<any> {
-    if (charDetailCache.has(id)) return charDetailCache.get(id)
-    const full = await apiFetch(`/api/v1/characters/${id}`)
-    charDetailCache.set(id, full)
-    return full
-  }
+  let hasGeneration = true
+  let hasCharacters = true
+  let hasChats = true
 
   let originalTextRaw = ''
   let categoryVariants: string[] = []
@@ -144,20 +34,21 @@ export function setup(ctx: SpindleFrontendContext) {
 
   const activeMounts: any[] = []
 
-  // Watchdog: only the backend round trip (status/prompts/generation) can
-  // still silently hang the way character loading used to. Character data
-  // itself now comes from fetch(), whose promise always settles one way or
-  // the other, so no watchdog is needed for that part anymore.
+  // Used to coordinate the two async backend responses on load
+  let pendingChars: any[] | null = null
+  let pendingActiveCharId: string | null | undefined = undefined
+
   const WATCHDOG_MS = 15000
   let statusRequestSeq = 0
 
-  // --- 1. ALWAYS MOUNTED CHARACTER DROPDOWN ---
+  // --- 1. CHARACTER DROPDOWN ---
   const charSlot = document.createElement('div')
   container.appendChild(charSlot)
   const charSelect = ctx.components.mountSelect(charSlot, {
     value: '', placeholder: "Loading characters...", options: [{ value: '', label: 'Loading characters...' }],
     onChange: (v) => {
       selectedChar = v
+      updateCategoryOptions()
       loadCurrentText()
     }
   })
@@ -179,7 +70,8 @@ export function setup(ctx: SpindleFrontendContext) {
   })
   activeMounts.push(catSelect)
 
-  function updateCategoryOptions(char: any) {
+  function updateCategoryOptions() {
+    const char = fullCharList.find(c => c.id === selectedChar)
     const options = [
       { value: 'description', label: 'Description' },
       { value: 'personality', label: 'Personality' },
@@ -222,7 +114,6 @@ export function setup(ctx: SpindleFrontendContext) {
   currentTextLabel.textContent = "Version History / Preview:"
   container.appendChild(currentTextLabel)
 
-  // Variant Selector
   const variantSelectSlot = document.createElement('div')
   variantSelectSlot.style.display = 'none'
   container.appendChild(variantSelectSlot)
@@ -250,7 +141,6 @@ export function setup(ctx: SpindleFrontendContext) {
   })
   activeMounts.push(currentTextInput)
 
-  // Actions row
   const currentActionsRow = document.createElement('div')
   currentActionsRow.style.cssText = 'display:flex;gap:8px;margin-top:-8px;'
   container.appendChild(currentActionsRow)
@@ -292,16 +182,12 @@ export function setup(ctx: SpindleFrontendContext) {
   generateBtn.style.cssText = 'background: var(--lumiverse-primary); color: white;'
   generateBtn.onclick = () => {
     if (!selectedChar) return
-
     if (isGenerating) {
-      // Second click while a generation is in flight — cancel it. Whatever
-      // text streamed in so far stays in the result box; nothing is lost.
       generateBtn.disabled = true
       generateBtn.textContent = 'Cancelling...'
       ctx.sendToBackend({ type: 'generate_cancel' })
       return
     }
-
     isGenerating = true
     streamedText = ''
     resultInput.update({ value: '' })
@@ -327,37 +213,15 @@ export function setup(ctx: SpindleFrontendContext) {
   saveResultBtn.onclick = () => saveVersion(resultInput.getValue())
   container.appendChild(saveResultBtn)
 
-
-  // --- CHARACTER TEXT (now purely local — no round trip) -----------------
-  let loadTextSeq = 0
-  async function loadCurrentText() {
-    if (!selectedChar) {
+  // --- LOCAL TEXT LOADER (reads from frontend cache) --------------------
+  function loadCurrentText() {
+    const char = fullCharList.find(c => c.id === selectedChar)
+    if (!char) {
       currentTextInput.update({ value: 'Select a character card above...' })
       variantSelectSlot.style.display = 'none'
       deleteVersionBtn.style.display = 'none'
       return
     }
-
-    const seq = ++loadTextSeq
-
-    // Rough pass with whatever we already have (slim list data) so the
-    // category dropdown isn't empty while the full detail fetch is in
-    // flight, then correct it below once detail arrives.
-    updateCategoryOptions(fullCharList.find(c => c.id === selectedChar))
-
-    let char: any
-    try {
-      char = await getCharDetail(selectedChar)
-    } catch (err: any) {
-      if (seq !== loadTextSeq) return // a newer selection started loading since
-      currentTextInput.update({ value: `Couldn't load character detail: ${err?.message || err}` })
-      variantSelectSlot.style.display = 'none'
-      deleteVersionBtn.style.display = 'none'
-      return
-    }
-    if (seq !== loadTextSeq) return // user picked something else while this was in flight
-
-    updateCategoryOptions(char)
 
     let text = ""
     if (selectedCategory.startsWith('alt_greeting_')) {
@@ -390,136 +254,58 @@ export function setup(ctx: SpindleFrontendContext) {
     deleteVersionBtn.style.display = selectedVersionKey === 'live' ? 'none' : 'block'
   }
 
-  // --- CHARACTER WRITES (now direct REST PATCH calls) ---------------------
-  // Merge against getCharDetail()'s cached object (single-character GET,
-  // includes extensions), never against fullCharList's slim list entry.
-  // After each successful write we mutate that cached object in place
-  // (rather than re-fetching), so a rapid second edit merges against what
-  // we actually just wrote instead of relying on the GET's own consistency.
-  async function withCurrentCharacter(work: (char: any) => Promise<any> | any): Promise<void> {
-    try {
-      const char = await getCharDetail(selectedChar)
-      if (!char) throw new Error('Character not found')
-      await work(char)
-    } catch (err: any) {
-      alert(`Action failed: ${err?.message || err}`)
-    }
-  }
-
-  async function saveVersion(text: string) {
-    await withCurrentCharacter(async (char) => {
-      const extData = char.extensions?.['char_rewriter'] || { variants: {} }
-      if (!extData.variants) extData.variants = {}
-      if (!extData.variants[selectedCategory]) extData.variants[selectedCategory] = []
-
-      const list = extData.variants[selectedCategory]
-      if (list.length === 0 || list[list.length - 1] !== text) {
-        list.push(text)
-        const mergedExtensions = { ...char.extensions, char_rewriter: extData }
-        await apiFetch(`/api/v1/characters/${selectedChar}`, {
-          method: 'PATCH',
-          body: JSON.stringify({ extensions: mergedExtensions })
-        })
-
-        // Verify it actually persisted rather than trusting the status code.
-        const verify = await apiFetch(`/api/v1/characters/${selectedChar}`)
-        const verifyList = verify?.extensions?.['char_rewriter']?.variants?.[selectedCategory]
-        if (!Array.isArray(verifyList) || verifyList[verifyList.length - 1] !== text) {
-          console.warn('[AI Character Rewriter] Save did not persist. Sent extensions:', mergedExtensions, 'Server now has:', verify?.extensions)
-          throw new Error(`Server accepted the save but didn't keep it — check the console for the raw response. This install's PATCH may not merge "extensions" the way this extension expects.`)
-        }
-        char.extensions = verify.extensions
-        charDetailCache.set(selectedChar, verify)
-      }
-
-      categoryVariants = extData.variants[selectedCategory]
-      selectedVersionKey = categoryVariants.length > 0 ? (categoryVariants.length - 1).toString() : 'live'
-      currentTextInput.update({ value: categoryVariants.length > 0 ? categoryVariants[categoryVariants.length - 1] : originalTextRaw })
-      resultInput.update({ value: '' })
-      saveResultBtn.style.display = 'none'
-      renderVariantsDropdown()
+  // --- BACKEND-WRAPPED WRITE OPERATIONS --------------------------------
+  function saveVersion(text: string) {
+    if (!selectedChar) return
+    ctx.sendToBackend({
+      type: 'save_version',
+      characterId: selectedChar,
+      category: selectedCategory,
+      text
     })
   }
 
-  async function deleteVersion(index: number) {
-    await withCurrentCharacter(async (char) => {
-      const extData = char.extensions?.['char_rewriter'] || { variants: {} }
-      if (extData.variants?.[selectedCategory]) {
-        extData.variants[selectedCategory].splice(index, 1)
-        const mergedExtensions = { ...char.extensions, char_rewriter: extData }
-        await apiFetch(`/api/v1/characters/${selectedChar}`, {
-          method: 'PATCH',
-          body: JSON.stringify({ extensions: mergedExtensions })
-        })
-        char.extensions = mergedExtensions
-      }
-
-      categoryVariants = extData.variants?.[selectedCategory] || []
-      selectedVersionKey = 'live'
-      currentTextInput.update({ value: originalTextRaw })
-      renderVariantsDropdown()
+  function deleteVersion(index: number) {
+    if (!selectedChar) return
+    ctx.sendToBackend({
+      type: 'delete_version',
+      characterId: selectedChar,
+      category: selectedCategory,
+      index
     })
   }
 
-  async function applyVersion(text: string) {
-    await withCurrentCharacter(async (char) => {
-      let updatePayload: any = {}
-      if (selectedCategory.startsWith('alt_greeting_')) {
-        const altGreetings = [...(char.alternate_greetings || [])]
-        const idx = parseInt(selectedCategory.replace('alt_greeting_', ''), 10)
-        altGreetings[idx] = text
-        updatePayload = { alternate_greetings: altGreetings }
-      } else {
-        updatePayload = { [selectedCategory]: text }
-      }
-
-      const patchResponse = await apiFetch(`/api/v1/characters/${selectedChar}`, {
-        method: 'PATCH',
-        body: JSON.stringify(updatePayload)
-      })
-
-      // Verify the write actually landed instead of trusting a 2xx status.
-      // Some REST implementations return 200 on a PATCH that silently didn't
-      // apply (wrong field name, wrong body shape, etc.) — bypass the cache
-      // and re-GET so we can tell the difference between "worked" and
-      // "server accepted the request but nothing changed."
-      const verify = await apiFetch(`/api/v1/characters/${selectedChar}`)
-      const actual = selectedCategory.startsWith('alt_greeting_')
-        ? (verify?.alternate_greetings || [])[parseInt(selectedCategory.replace('alt_greeting_', ''), 10)]
-        : verify?.[selectedCategory]
-      if (actual !== text) {
-        console.warn('[AI Character Rewriter] Apply did not persist. Sent:', updatePayload, 'PATCH response body:', patchResponse, 'Follow-up GET:', verify)
-        throw new Error(`Server accepted the request but the card wasn't updated. Check the browser console for the raw response — the field name/shape this extension is sending (PATCH ${JSON.stringify(updatePayload)}) may not match what this Lumiverse install expects.`)
-      }
-      charDetailCache.set(selectedChar, verify)
-
-      // Keep both caches in sync: the detail cache (source of truth for
-      // future save/delete/apply merges) and the slim list entry (source
-      // for the dropdown label/avatar).
-      Object.assign(char, updatePayload)
-      const listEntry = fullCharList.find(c => c.id === selectedChar)
-      if (listEntry) Object.assign(listEntry, updatePayload)
-
-      originalTextRaw = text
-      selectedVersionKey = 'live'
-      renderVariantsDropdown()
-      currentTextInput.update({ value: originalTextRaw })
+  function applyVersion(text: string) {
+    if (!selectedChar) return
+    ctx.sendToBackend({
+      type: 'apply_version',
+      characterId: selectedChar,
+      category: selectedCategory,
+      text
     })
   }
 
-  // --- EVENT LISTENERS ---
+  // --- EVENT LISTENERS -------------------------------------------------
   const unsubPermissions = ctx.events.on('PERMISSION_CHANGED', () => { loadEverything() })
 
   ctx.onBackendMessage((payload: any) => {
+    // Status / permissions
     if (payload.type === 'status_result') {
-      statusRequestSeq++ // a response arrived — cancel the status watchdog
+      statusRequestSeq++
       hasGeneration = payload.hasGeneration
+      hasCharacters = payload.hasCharacters
+      hasChats = payload.hasChats
       currentPrompts = payload.prompts
       basePromptInput.update({ value: currentPrompts.base })
       generateBtn.style.display = hasGeneration ? 'block' : 'none'
-      if (!hasGeneration) {
+
+      if (!hasCharacters || !hasGeneration) {
         permissionWarning.style.display = 'block'
-        permissionWarning.innerHTML = `<strong>Generation permission not granted.</strong> AI rewriting is disabled until it's enabled in the extension's permissions.`
+        let html = ''
+        if (!hasCharacters) html += `<strong>Characters permission not granted.</strong> Character loading and card editing are disabled.<br>`
+        if (!hasGeneration) html += `<strong>Generation permission not granted.</strong> AI rewriting is disabled.<br>`
+        if (!hasChats) html += `<small>Chats permission not granted. Active-chat auto-detection is disabled.</small>`
+        permissionWarning.innerHTML = html
       } else {
         permissionWarning.style.display = 'none'
       }
@@ -538,6 +324,86 @@ export function setup(ctx: SpindleFrontendContext) {
       basePromptInput.update({ value: currentPrompts.base })
     }
 
+    // Character list loaded
+    if (payload.type === 'characters_result') {
+      pendingChars = payload.characters
+      tryFinalizeLoad()
+      return
+    }
+
+    // Active character resolved
+    if (payload.type === 'active_char_resolved') {
+      pendingActiveCharId = payload.characterId
+      tryFinalizeLoad()
+      return
+    }
+
+    // Version saved
+    if (payload.type === 'version_saved') {
+      const cached = fullCharList.find(c => c.id === payload.characterId)
+      if (cached) {
+        if (!cached.extensions) cached.extensions = {}
+        cached.extensions['char_rewriter'] = {
+          ...(cached.extensions['char_rewriter'] || {}),
+          variants: {
+            ...(cached.extensions['char_rewriter']?.variants || {}),
+            [payload.category]: payload.variants
+          }
+        }
+      }
+      categoryVariants = payload.variants
+      selectedVersionKey = categoryVariants.length > 0 ? (categoryVariants.length - 1).toString() : 'live'
+      currentTextInput.update({ value: categoryVariants.length > 0 ? categoryVariants[categoryVariants.length - 1] : originalTextRaw })
+      resultInput.update({ value: '' })
+      saveResultBtn.style.display = 'none'
+      renderVariantsDropdown()
+      return
+    }
+
+    // Version deleted
+    if (payload.type === 'version_deleted') {
+      const cached = fullCharList.find(c => c.id === payload.characterId)
+      if (cached && cached.extensions?.['char_rewriter']) {
+        if (!cached.extensions['char_rewriter'].variants) cached.extensions['char_rewriter'].variants = {}
+        cached.extensions['char_rewriter'].variants[payload.category] = payload.variants
+      }
+      categoryVariants = payload.variants
+      selectedVersionKey = 'live'
+      currentTextInput.update({ value: originalTextRaw })
+      renderVariantsDropdown()
+      return
+    }
+
+    // Version applied to card
+    if (payload.type === 'version_applied') {
+      const cached = fullCharList.find(c => c.id === payload.characterId)
+      const appliedText = currentTextInput.getValue()
+      if (cached) {
+        if (payload.category.startsWith('alt_greeting_')) {
+          const idx = parseInt(payload.category.replace('alt_greeting_', ''), 10)
+          const altGreetings = [...(cached.alternate_greetings || [])]
+          altGreetings[idx] = appliedText
+          cached.alternate_greetings = altGreetings
+        } else {
+          cached[payload.category] = appliedText
+        }
+      }
+      originalTextRaw = appliedText
+      selectedVersionKey = 'live'
+      renderVariantsDropdown()
+      currentTextInput.update({ value: originalTextRaw })
+      return
+    }
+
+    // Generic backend error
+    if (payload.type === 'error') {
+      console.error('[AI Character Rewriter] Backend error:', payload.error)
+      // Surface briefly in the text area so the user sees it
+      currentTextInput.update({ value: `Error: ${payload.error}` })
+      return
+    }
+
+    // Generation streaming
     if (payload.type === 'generate_token') {
       streamedText += payload.token
       resultInput.update({ value: streamedText })
@@ -547,8 +413,6 @@ export function setup(ctx: SpindleFrontendContext) {
       isGenerating = false
       generateBtn.textContent = 'Rewrite with AI'
       generateBtn.disabled = false
-      // Prefer the aggregated final content from the 'done' chunk in case
-      // it differs at all from what we accumulated token-by-token.
       resultInput.update({ value: payload.result })
       saveResultBtn.style.display = 'block'
     }
@@ -557,8 +421,6 @@ export function setup(ctx: SpindleFrontendContext) {
       isGenerating = false
       generateBtn.textContent = 'Rewrite with AI'
       generateBtn.disabled = false
-      // Keep whatever streamed in before the cancel — let the user save or
-      // keep editing the partial result instead of losing it.
       if (streamedText) saveResultBtn.style.display = 'block'
     }
 
@@ -580,47 +442,47 @@ export function setup(ctx: SpindleFrontendContext) {
     }, WATCHDOG_MS)
   }
 
-  // --- MAIN LOAD (characters via direct REST, no backend round trip) -----
-  async function loadEverything() {
+  // Coordinate the two async init messages (character list + active char)
+  function tryFinalizeLoad() {
+    if (pendingChars === null || pendingActiveCharId === undefined) return
+
+    fullCharList = pendingChars
+    selectedChar = pendingActiveCharId || (fullCharList[0]?.id ?? '')
+    pendingChars = null
+    pendingActiveCharId = undefined
+
+    charSelect.update({
+      value: selectedChar,
+      placeholder: "Select Character",
+      searchPlaceholder: "Search...",
+      options: fullCharList.map((c: any) => ({
+        value: c.id,
+        label: c.name,
+        leading: c.image_id ? { type: 'image', src: `/api/v1/images/${c.image_id}?size=sm` } : undefined
+      }))
+    })
+
+    updateCategoryOptions()
+    if (selectedChar) loadCurrentText()
+  }
+
+  // --- MAIN LOAD (now via backend messages) ----------------------------
+  function loadEverything() {
     charSelect.update({ placeholder: "Loading characters...", options: [{ value: '', label: 'Loading characters...' }] })
+    pendingChars = null
+    pendingActiveCharId = undefined
 
     requestStatus()
 
-    // This is an explicit resync point (initial load, or the user coming
-    // back to the tab) — drop cached character detail so we pick up any
-    // edits made elsewhere instead of reusing stale data indefinitely.
-    charDetailCache.clear()
+    const currentUrl = window.location.pathname + window.location.hash
+    const match = currentUrl.match(/\/(characters|chat)\/([a-zA-Z0-9_-]+)/)
 
-    try {
-      const currentUrl = window.location.pathname + window.location.hash
-      const match = currentUrl.match(/\/(characters|chat)\/([a-zA-Z0-9_-]+)/)
-      const routeType = match ? match[1] : null
-      const routeId = match ? match[2] : null
-
-      const [chars, activeId] = await Promise.all([
-        fetchAllCharactersFromApi(),
-        resolveActiveCharId(routeType, routeId)
-      ])
-
-      fullCharList = chars
-      selectedChar = activeId || (chars[0]?.id ?? '')
-
-      charSelect.update({
-        value: selectedChar, placeholder: "Select Character", searchPlaceholder: "Search...",
-        options: chars.map((c: any) => ({
-          value: c.id, label: c.name, leading: c.image_id ? { type: 'image', src: `/api/v1/images/${c.image_id}?size=sm` } : undefined
-        }))
-      })
-
-      if (selectedChar) {
-        loadCurrentText()
-      } else {
-        updateCategoryOptions(undefined)
-      }
-    } catch (err: any) {
-      charSelect.update({ placeholder: "Error loading characters", options: [] })
-      currentTextInput.update({ value: `Couldn't load characters: ${err?.message || err}` })
-    }
+    ctx.sendToBackend({ type: 'get_characters' })
+    ctx.sendToBackend({
+      type: 'resolve_active_char',
+      routeType: match ? match[1] : null,
+      routeId: match ? match[2] : null
+    })
   }
 
   loadEverything()
