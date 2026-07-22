@@ -8,6 +8,11 @@ export function setup(ctx: SpindleFrontendContext) {
     iconSvg: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>'
   })
 
+  // Re-sync character list automatically whenever tab is clicked [2.3.1]
+  const unsubTabActivate = tab.onActivate(() => {
+    requestInitData()
+  })
+
   // Permission warning UI
   const permissionWarning = document.createElement('div')
   permissionWarning.style.cssText = 'display:none; padding:16px; margin:16px; background:rgba(239,68,68,0.1); border:1px solid rgba(239,68,68,0.25); border-radius:var(--lumiverse-radius); color:var(--lumiverse-danger); font-size:13px; line-height:1.5;'
@@ -133,7 +138,7 @@ export function setup(ctx: SpindleFrontendContext) {
   activeMounts.push(variantSelect)
 
   const currentTextSlot = document.createElement('div')
-  container.appendChild(currentTextSlot) // FIXED: Replaced circular appendChild
+  container.appendChild(currentTextSlot)
   const currentTextInput = ctx.components.mountTextArea(currentTextSlot, {
     value: '', rows: 5, placeholder: 'Select a character card above...'
   })
@@ -328,6 +333,7 @@ export function setup(ctx: SpindleFrontendContext) {
     }
   })
 
+  // FIXED: Handles modern paths (/chat/abc) and legacy hash routing (/index.html#/chat/abc)
   function requestInitData() {
     const currentUrl = window.location.pathname + window.location.hash
     const match = currentUrl.match(/\/(characters|chat)\/([a-zA-Z0-9_-]+)/)
@@ -339,6 +345,7 @@ export function setup(ctx: SpindleFrontendContext) {
   return () => {
     tab.destroy()
     unsubPermissions()
+    unsubTabActivate()
     activeMounts.forEach(m => m?.destroy?.())
   }
 }
