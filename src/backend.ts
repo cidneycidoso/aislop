@@ -16,12 +16,6 @@ interface VersionStore {
   }
 }
 
-interface FrontendMessage {
-  type: string
-  userId?: string
-  [key: string]: any
-}
-
 // ─── Default Prompts ────────────────────────────────────────────────────────
 
 const DEFAULT_PROMPTS: PromptConfig = {
@@ -103,13 +97,13 @@ function getCategoryLabel(category: string): string {
 
 // ─── Message Handlers ─────────────────────────────────────────────────────
 
-async function handleGetInitData(msg: FrontendMessage, userId?: string) {
+async function handleGetInitData(msg: any, userId?: string) {
   const hasChars = spindle.permissions.has('characters')
   const hasGen = spindle.permissions.has('generation')
   const hasChats = spindle.permissions.has('chats')
 
   if (!hasChars || !hasGen || !hasChats) {
-    spindle.sendToFrontend({ type: 'permission_status', missing: [] })
+    spindle.sendToFrontend({ type: 'permission_status', missing: [] }, userId)
     return
   }
 
@@ -134,7 +128,7 @@ async function handleGetInitData(msg: FrontendMessage, userId?: string) {
 
     spindle.sendToFrontend({
       type: 'init_data',
-      chars: chars.map((c) => ({
+      chars: chars.map((c: any) => ({
         id: c.id,
         name: c.name,
         image_id: c.image_id,
@@ -142,18 +136,18 @@ async function handleGetInitData(msg: FrontendMessage, userId?: string) {
       })),
       prompts,
       activeCharId: activeCharId || (chars[0]?.id ?? ''),
-    })
+    }, userId)
   } catch (err: any) {
     spindle.log.error(`[${EXT_ID}] init_data error: ${err?.message ?? err}`)
-    spindle.sendToFrontend({ type: 'init_error', error: err?.message ?? 'Unknown error' })
+    spindle.sendToFrontend({ type: 'init_error', error: err?.message ?? 'Unknown error' }, userId)
   }
 }
 
-async function handleGetCharText(msg: FrontendMessage, userId?: string) {
+async function handleGetCharText(msg: any, userId?: string) {
   try {
     const char = await spindle.characters.get(msg.characterId)
     if (!char) {
-      spindle.sendToFrontend({ type: 'char_text_result', text: '', variants: [] })
+      spindle.sendToFrontend({ type: 'char_text_result', text: '', variants: [] }, userId)
       return
     }
 
@@ -165,36 +159,28 @@ async function handleGetCharText(msg: FrontendMessage, userId?: string) {
       type: 'char_text_result',
       text,
       variants,
-    })
+    }, userId)
   } catch (err: any) {
     spindle.log.error(`[${EXT_ID}] get_char_text error: ${err?.message ?? err}`)
-    spindle.sendToFrontend({ type: 'char_text_result', text: '', variants: [] })
+    spindle.sendToFrontend({ type: 'char_text_result', text: '', variants: [] }, userId)
   }
 }
 
-async function handleSavePrompts(msg: FrontendMessage, userId?: string) {
+async function handleSavePrompts(msg: any, userId?: string) {
   try {
     const prompts: PromptConfig = {
       base: msg.prompts?.base ?? DEFAULT_PROMPTS.base,
     }
     await setPrompts(userId, prompts)
-    spindle.sendToFrontend({ type: 'prompts_updated', prompts })
-    if (userId) {
-      spindle.toast.success('AI instructions saved.', { userId })
-    } else {
-      spindle.toast.success('AI instructions saved.')
-    }
+    spindle.sendToFrontend({ type: 'prompts_updated', prompts }, userId)
+    spindle.toast.success('AI instructions saved.', userId ? { userId } : undefined)
   } catch (err: any) {
     spindle.log.error(`[${EXT_ID}] save_prompts error: ${err?.message ?? err}`)
-    if (userId) {
-      spindle.toast.error('Failed to save instructions.', { userId })
-    } else {
-      spindle.toast.error('Failed to save instructions.')
-    }
+    spindle.toast.error('Failed to save instructions.', userId ? { userId } : undefined)
   }
 }
 
-async function handleSaveVersion(msg: FrontendMessage, userId?: string) {
+async function handleSaveVersion(msg: any, userId?: string) {
   try {
     const versions = await getVersions(userId)
     if (!versions[msg.characterId]) versions[msg.characterId] = {}
@@ -206,31 +192,19 @@ async function handleSaveVersion(msg: FrontendMessage, userId?: string) {
     spindle.sendToFrontend({
       type: 'save_version_success',
       variants: versions[msg.characterId][msg.category],
-    })
-    if (userId) {
-      spindle.toast.success('Version saved.', { userId })
-    } else {
-      spindle.toast.success('Version saved.')
-    }
+    }, userId)
+    spindle.toast.success('Version saved.', userId ? { userId } : undefined)
   } catch (err: any) {
     spindle.log.error(`[${EXT_ID}] save_version error: ${err?.message ?? err}`)
-    if (userId) {
-      spindle.toast.error('Failed to save version.', { userId })
-    } else {
-      spindle.toast.error('Failed to save version.')
-    }
+    spindle.toast.error('Failed to save version.', userId ? { userId } : undefined)
   }
 }
 
-async function handleApplyVersion(msg: FrontendMessage, userId?: string) {
+async function handleApplyVersion(msg: any, userId?: string) {
   try {
     const char = await spindle.characters.get(msg.characterId)
     if (!char) {
-      if (userId) {
-        spindle.toast.error('Character not found.', { userId })
-      } else {
-        spindle.toast.error('Character not found.')
-      }
+      spindle.toast.error('Character not found.', userId ? { userId } : undefined)
       return
     }
 
@@ -250,32 +224,20 @@ async function handleApplyVersion(msg: FrontendMessage, userId?: string) {
     spindle.sendToFrontend({
       type: 'apply_success',
       text: msg.text,
-    })
-    if (userId) {
-      spindle.toast.success(`Applied to ${getCategoryLabel(msg.category)}.`, { userId })
-    } else {
-      spindle.toast.success(`Applied to ${getCategoryLabel(msg.category)}.`)
-    }
+    }, userId)
+    spindle.toast.success(`Applied to ${getCategoryLabel(msg.category)}.`, userId ? { userId } : undefined)
   } catch (err: any) {
     spindle.log.error(`[${EXT_ID}] apply_version error: ${err?.message ?? err}`)
-    if (userId) {
-      spindle.toast.error('Failed to apply version.', { userId })
-    } else {
-      spindle.toast.error('Failed to apply version.')
-    }
+    spindle.toast.error('Failed to apply version.', userId ? { userId } : undefined)
   }
 }
 
-async function handleDeleteVersion(msg: FrontendMessage, userId?: string) {
+async function handleDeleteVersion(msg: any, userId?: string) {
   try {
     const versions = await getVersions(userId)
     const charVersions = versions[msg.characterId]?.[msg.category]
     if (!charVersions || msg.index < 0 || msg.index >= charVersions.length) {
-      if (userId) {
-        spindle.toast.error('Version not found.', { userId })
-      } else {
-        spindle.toast.error('Version not found.')
-      }
+      spindle.toast.error('Version not found.', userId ? { userId } : undefined)
       return
     }
 
@@ -292,35 +254,30 @@ async function handleDeleteVersion(msg: FrontendMessage, userId?: string) {
       type: 'char_text_result',
       text: liveText,
       variants: versions[msg.characterId]?.[msg.category] ?? [],
-    })
-    if (userId) {
-      spindle.toast.success('Version deleted.', { userId })
-    } else {
-      spindle.toast.success('Version deleted.')
-    }
+    }, userId)
+    spindle.toast.success('Version deleted.', userId ? { userId } : undefined)
   } catch (err: any) {
     spindle.log.error(`[${EXT_ID}] delete_version error: ${err?.message ?? err}`)
-    if (userId) {
-      spindle.toast.error('Failed to delete version.', { userId })
-    } else {
-      spindle.toast.error('Failed to delete version.')
-    }
+    spindle.toast.error('Failed to delete version.', userId ? { userId } : undefined)
   }
 }
 
-async function handleGenerate(msg: FrontendMessage, userId?: string) {
+async function handleGenerate(msg: any, userId?: string) {
   try {
     const prompts = await getPrompts(userId)
     const char = await spindle.characters.get(msg.characterId)
     if (!char) {
-      spindle.sendToFrontend({ type: 'generate_failed', error: 'Character not found' })
+      spindle.sendToFrontend({ type: 'generate_failed', error: 'Character not found' }, userId)
       return
     }
 
     const categoryLabel = getCategoryLabel(msg.category)
-    const systemPrompt = prompts.base
 
-    const userPrompt = `Character Name: ${char.name}
+    const messages = [
+      { role: 'system' as const, content: prompts.base },
+      {
+        role: 'user' as const,
+        content: `Character Name: ${char.name}
 Character Description: ${char.description || 'N/A'}
 Character Personality: ${char.personality || 'N/A'}
 
@@ -328,45 +285,35 @@ Please rewrite the following ${categoryLabel} for this character:
 
 ---
 ${msg.originalText || '(empty)'}
----`
+---`,
+      },
+    ]
 
-    let result
+    let result: any
     if (userId) {
-      result = await spindle.generate.quiet({
-        systemPrompt,
-        prompt: userPrompt,
-        maxTokens: 2048,
-        temperature: 0.8,
-      }, userId)
+      result = await spindle.generate.quiet({ messages }, userId)
     } else {
-      result = await spindle.generate.quiet({
-        systemPrompt,
-        prompt: userPrompt,
-        maxTokens: 2048,
-        temperature: 0.8,
-      })
+      result = await spindle.generate.quiet({ messages })
     }
 
-    if (!result || !result.text) {
-      spindle.sendToFrontend({ type: 'generate_failed', error: 'Empty generation result' })
+    if (!result || !result.content) {
+      spindle.sendToFrontend({ type: 'generate_failed', error: 'Empty generation result' }, userId)
       return
     }
 
     spindle.sendToFrontend({
       type: 'generate_result',
-      result: result.text.trim(),
-    })
+      result: result.content.trim(),
+    }, userId)
   } catch (err: any) {
     spindle.log.error(`[${EXT_ID}] generate error: ${err?.message ?? err}`)
-    spindle.sendToFrontend({ type: 'generate_failed', error: err?.message ?? 'Generation failed' })
+    spindle.sendToFrontend({ type: 'generate_failed', error: err?.message ?? 'Generation failed' }, userId)
   }
 }
 
 // ─── Main ───────────────────────────────────────────────────────────────────
 
-spindle.on('message', async (msg: FrontendMessage) => {
-  const userId = msg.userId
-
+spindle.onFrontendMessage(async (msg: any, userId: string) => {
   switch (msg.type) {
     case 'get_init_data':
       await handleGetInitData(msg, userId)
