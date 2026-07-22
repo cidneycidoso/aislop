@@ -1,16 +1,45 @@
 import type { SpindleFrontendContext } from 'lumiverse-spindle-types'
 
 export function setup(ctx: SpindleFrontendContext) {
+  // 1. Register the Drawer Tab in Lumiverse sidebar & Command Palette (Ctrl+K)
   const tab = ctx.ui.registerDrawerTab({
     id: 'ai-character-rewriter',
     title: 'AI Character Rewriter',
-    headerTitle: 'Character Rewriter',
-    shortName: 'Rewrite',
-    description: 'Rewrite character descriptions, personalities, and greetings with AI',
-    keywords: ['rewrite', 'character', 'ai', 'editor', 'greeting', 'prompt'],
-    // Explicit 20x20 dimensions ensure proper rendering and clickable hit box in sidebar
-    iconSvg: '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>'
+    shortName: 'Rewriter',
+    iconSvg: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>'
   })
+
+  // 2. Inject a Floating Action Button (FAB) on screen for 1-click access
+  const fab = ctx.dom.inject('body', `
+    <button id="ai-rewriter-fab-btn" title="Open AI Character Rewriter" style="
+      position: fixed;
+      bottom: 84px;
+      right: 24px;
+      z-index: 9990;
+      width: 46px;
+      height: 46px;
+      border-radius: 50%;
+      background: var(--lumiverse-primary, #6366f1);
+      color: #ffffff;
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: transform 0.15s ease, background 0.2s ease;
+    ">
+      <svg xmlns="http://www.w3.org/2000/svg" width="22" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+    </button>
+  `)
+
+  const handleFabClick = () => {
+    tab.activate() // Programmatically opens the drawer and switches to this tab
+  }
+  fab.addEventListener('click', handleFabClick)
+
+  fab.addEventListener('mouseenter', () => { fab.style.transform = 'scale(1.08)' })
+  fab.addEventListener('mouseleave', () => { fab.style.transform = 'scale(1.0)' })
 
   // --- STATE ---
   let characterList: any[] = []
@@ -19,7 +48,7 @@ export function setup(ctx: SpindleFrontendContext) {
   let currentPrompts: any = {}
   let liveTextRaw = ''
   let savedVariants: string[] = []
-  let selectedVersionKey = 'live' // 'live' or string index '0', '1', ...
+  let selectedVersionKey = 'live'
 
   const activeMounts: any[] = []
 
@@ -244,3 +273,186 @@ export function setup(ctx: SpindleFrontendContext) {
       deleteDraftBtn.style.display = 'none'
     } else {
       const idx = parseInt(selectedVersionKey, 10)
+      textViewerInput.update({ value: savedVariants[idx] || '' })
+      deleteDraftBtn.style.display = 'block'
+    }
+  }
+
+  function updateVariantOptions() {
+    const options = [{ value: 'live', label: 'Live Card Text' }]
+    savedVariants.forEach((_, i) => {
+      options.push({ value: i.toString(), label: `Draft Version ${i + 1}` })
+    })
+    variantSelect.update({ options, value: selectedVersionKey })
+    renderCurrentText()
+  }
+
+  // --- 5. AI GENERATION ---
+  const divider = document.createElement('div')
+  divider.style.cssText = 'border-top:1px solid var(--lumiverse-border, rgba(255,255,255,0.1)); margin:4px 0;'
+  container.appendChild(divider)
+
+  const generateBtn = document.createElement('button')
+  generateBtn.textContent = 'Rewrite with AI'
+  generateBtn.className = 'btn'
+  generateBtn.style.cssText = 'background:var(--lumiverse-primary, #6366f1); color:#fff; font-weight:600; padding:10px;'
+  generateBtn.onclick = () => {
+    if (!selectedCharId) return
+    generateBtn.disabled = true
+    generateBtn.textContent = 'Rewriting with AI...'
+    showStatus('AI is processing your request...', 'info')
+    ctx.sendToBackend({
+      type: 'generate_rewrite',
+      characterId: selectedCharId,
+      category: selectedCategory,
+      originalText: textViewerInput.getValue()
+    })
+  }
+  container.appendChild(generateBtn)
+
+  const aiResultSlot = document.createElement('div')
+  container.appendChild(aiResultSlot)
+
+  const aiResultInput = ctx.components.mountTextArea(aiResultSlot, {
+    value: '',
+    rows: 5,
+    placeholder: 'AI generated rewrite will appear here...'
+  })
+  activeMounts.push(aiResultInput)
+
+  const saveAiDraftBtn = document.createElement('button')
+  saveAiDraftBtn.textContent = 'Save AI Result as Draft'
+  saveAiDraftBtn.className = 'btn'
+  saveAiDraftBtn.style.cssText = 'display:none; background:var(--lumiverse-primary, #6366f1); color:#fff;'
+  saveAiDraftBtn.onclick = () => {
+    if (!selectedCharId || !aiResultInput.getValue()) return
+    ctx.sendToBackend({
+      type: 'save_draft',
+      characterId: selectedCharId,
+      category: selectedCategory,
+      text: aiResultInput.getValue()
+    })
+  }
+  container.appendChild(saveAiDraftBtn)
+
+  // --- BACKEND IPC HANDLERS ---
+  function requestInitData() {
+    hideStatus()
+    const currentUrl = window.location.pathname + window.location.hash
+    const match = currentUrl.match(/\/(characters|chat)\/([a-zA-Z0-9_-]+)/)
+    ctx.sendToBackend({
+      type: 'get_init_data',
+      routeType: match ? match[1] : null,
+      routeId: match ? match[2] : null
+    })
+  }
+
+  function fetchCategoryText() {
+    if (!selectedCharId) return
+    textViewerInput.update({ value: 'Loading aspect text...' })
+    ctx.sendToBackend({
+      type: 'get_char_text',
+      characterId: selectedCharId,
+      category: selectedCategory
+    })
+  }
+
+  ctx.onBackendMessage((payload: any) => {
+    if (payload.type === 'permission_error') {
+      showStatus(`<strong>Permissions Required:</strong> ${payload.error}`, 'error')
+      charSelect.update({ placeholder: 'Permissions required', options: [] })
+      return
+    }
+
+    if (payload.type === 'backend_error') {
+      showStatus(`<strong>Backend Error:</strong> ${payload.error}`, 'error')
+      generateBtn.disabled = false
+      generateBtn.textContent = 'Rewrite with AI'
+      return
+    }
+
+    if (payload.type === 'init_data') {
+      hideStatus()
+      characterList = payload.chars || []
+      currentPrompts = payload.prompts || {}
+      basePromptInput.update({ value: currentPrompts.base || '' })
+
+      if (characterList.length === 0) {
+        showStatus('No character cards found in your library.', 'warning')
+        charSelect.update({ value: '', placeholder: 'No characters available', options: [] })
+        return
+      }
+
+      selectedCharId = payload.activeCharId || characterList[0]?.id || ''
+
+      charSelect.update({
+        value: selectedCharId,
+        placeholder: 'Select Character',
+        searchPlaceholder: 'Search character...',
+        options: characterList.map((c: any) => ({
+          value: c.id,
+          label: c.name,
+          leading: c.image_id ? { type: 'image', src: `/api/v1/images/${c.image_id}?size=sm` } : undefined
+        }))
+      })
+
+      updateAspectOptions()
+      if (selectedCharId) fetchCategoryText()
+    }
+
+    if (payload.type === 'char_text_result') {
+      liveTextRaw = payload.text || ''
+      savedVariants = payload.variants || []
+      selectedVersionKey = 'live'
+      updateVariantOptions()
+      aiResultInput.update({ value: '' })
+      saveAiDraftBtn.style.display = 'none'
+    }
+
+    if (payload.type === 'generate_success') {
+      generateBtn.disabled = false
+      generateBtn.textContent = 'Rewrite with AI'
+      showStatus('AI rewrite completed!', 'success')
+      aiResultInput.update({ value: payload.result })
+      saveAiDraftBtn.style.display = 'block'
+    }
+
+    if (payload.type === 'draft_saved') {
+      showStatus('Draft version saved!', 'success')
+      savedVariants = payload.variants || []
+      selectedVersionKey = (savedVariants.length - 1).toString()
+      updateVariantOptions()
+      aiResultInput.update({ value: '' })
+      saveAiDraftBtn.style.display = 'none'
+    }
+
+    if (payload.type === 'apply_success') {
+      showStatus('Character card updated successfully!', 'success')
+      liveTextRaw = payload.text || ''
+      selectedVersionKey = 'live'
+      updateVariantOptions()
+      requestInitData()
+    }
+
+    if (payload.type === 'prompts_saved') {
+      showStatus('Instructions saved successfully!', 'success')
+      currentPrompts = payload.prompts
+    }
+  })
+
+  // Synchronize whenever drawer tab is activated
+  const unsubTabActivate = tab.onActivate(() => {
+    requestInitData()
+  })
+
+  // Initial trigger
+  requestInitData()
+
+  return () => {
+    tab.destroy()
+    unsubTabActivate()
+    fab.removeEventListener('click', handleFabClick)
+    ctx.dom.uninject(fab)
+    activeMounts.forEach(m => m?.destroy?.())
+  }
+}
