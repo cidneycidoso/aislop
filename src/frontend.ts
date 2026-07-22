@@ -8,10 +8,17 @@ export function setup(ctx: SpindleFrontendContext) {
     iconSvg: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>'
   })
 
+  // Re-sync character list automatically whenever tab is clicked [2.3.1]
+  const unsubTabActivate = tab.onActivate(() => {
+    requestInitData()
+  })
+
+  // Permission warning UI
   const permissionWarning = document.createElement('div')
   permissionWarning.style.cssText = 'display:none; padding:16px; margin:16px; background:rgba(239,68,68,0.1); border:1px solid rgba(239,68,68,0.25); border-radius:var(--lumiverse-radius); color:var(--lumiverse-danger); font-size:13px; line-height:1.5;'
   tab.root.appendChild(permissionWarning)
 
+  // Main interaction container
   const container = document.createElement('div')
   container.style.cssText = 'display:flex;flex-direction:column;gap:16px;padding:16px;'
   tab.root.appendChild(container)
@@ -23,20 +30,35 @@ export function setup(ctx: SpindleFrontendContext) {
   
   let originalTextRaw = ''
   let categoryVariants: string[] = []
-  let selectedVersionKey = 'live' // 'live' or string index '0', '1', etc.
+  let selectedVersionKey = 'live' 
   
   const activeMounts: any[] = []
 
+  // Watchdog bookkeeping: if the backend never replies (crash, dropped
+  // message, host bug, etc.) the UI would otherwise be stuck on a "Loading…"
+  // placeholder forever with no way out. Each request gets a sequence number;
+  // if that sequence is still current when the timeout fires, we know no
+  // response arrived and can show a real error instead of spinning silently.
+  const WATCHDOG_MS = 15000
+  let initRequestSeq = 0
+  let charTextRequestSeq = 0
+
   const fetchCurrentText = () => {
     if (selectedChar && selectedCategory) {
+      const seq = ++charTextRequestSeq
       ctx.sendToBackend({ type: 'get_char_text', characterId: selectedChar, category: selectedCategory })
       currentTextInput.update({ value: 'Loading current text...' })
       variantSelectSlot.style.display = 'none' 
       deleteVersionBtn.style.display = 'none'
+      setTimeout(() => {
+        if (seq === charTextRequestSeq) {
+          currentTextInput.update({ value: 'The backend did not respond. Try switching characters again, or reload the extension.' })
+        }
+      }, WATCHDOG_MS)
     }
   }
 
-  // --- 1. CHARACTER DROPDOWN ---
+  // --- 1. ALWAYS MOUNTED CHARACTER DROPDOWN ---
   const charSlot = document.createElement('div')
   container.appendChild(charSlot)
   const charSelect = ctx.components.mountSelect(charSlot, {
@@ -85,7 +107,7 @@ export function setup(ctx: SpindleFrontendContext) {
     catSelect.update({ options, value: selectedCategory })
   }
 
-  // --- 3. AI SYSTEM INSTRUCTIONS ---
+  // --- 3. PROMPTS CONFIGURATION ---
   const promptSlot = document.createElement('div')
   container.appendChild(promptSlot)
   const promptSection = ctx.components.mountCollapsibleSection(promptSlot, {
@@ -103,13 +125,13 @@ export function setup(ctx: SpindleFrontendContext) {
   savePromptsBtn.onclick = () => ctx.sendToBackend({ type: 'save_prompts', prompts: currentPrompts })
   promptSection.body.appendChild(savePromptsBtn)
 
-  // --- 4. VERSION MANAGER & CURRENT PREVIEW ---
+  // --- 4. CURRENT TEXT VIEWER & VARIANT PICKER ---
   const currentTextLabel = document.createElement('div')
   currentTextLabel.style.cssText = 'font-weight: 500; font-size: 13px; color: var(--lumiverse-text-dim); margin-bottom: -8px;'
   currentTextLabel.textContent = "Version History / Preview:"
   container.appendChild(currentTextLabel)
 
-  // Selector to cycle drafts
+  // Variant Selector
   const variantSelectSlot = document.createElement('div')
   variantSelectSlot.style.display = 'none'
   container.appendChild(variantSelectSlot)
@@ -124,7 +146,7 @@ export function setup(ctx: SpindleFrontendContext) {
       } else {
         const idx = parseInt(v, 10)
         currentTextInput.update({ value: categoryVariants[idx] || '' })
-        deleteVersionBtn.style.display = 'block' // Show delete only if not 'live'
+        deleteVersionBtn.style.display = 'block' 
       }
     }
   })
@@ -137,7 +159,7 @@ export function setup(ctx: SpindleFrontendContext) {
   })
   activeMounts.push(currentTextInput)
 
-  // Row for Current Text Actions
+  // Actions row
   const currentActionsRow = document.createElement('div')
   currentActionsRow.style.cssText = 'display:flex;gap:8px;margin-top:-8px;'
   container.appendChild(currentActionsRow)
@@ -177,7 +199,7 @@ export function setup(ctx: SpindleFrontendContext) {
   }
   container.appendChild(deleteVersionBtn)
 
-  // --- 5. AI REWRITER ENGINE ---
+  // --- 5. AI GENERATOR ---
   const aiDivider = document.createElement('div')
   aiDivider.style.cssText = 'border-top: 1px solid var(--lumiverse-border); margin: 8px 0;'
   container.appendChild(aiDivider)
@@ -236,6 +258,7 @@ export function setup(ctx: SpindleFrontendContext) {
 
   ctx.onBackendMessage((payload: any) => {
     if (payload.type === 'permission_status') {
+      initRequestSeq++ // a response arrived — cancel the init watchdog
       container.style.display = 'none'
       permissionWarning.style.display = 'block'
       permissionWarning.innerHTML = `<strong>Permissions Required.</strong> Please enable Characters, Chats, and Generation access.`
@@ -243,12 +266,14 @@ export function setup(ctx: SpindleFrontendContext) {
     }
 
     if (payload.type === 'init_error') {
+      initRequestSeq++ // a response arrived — cancel the init watchdog
       charSelect.update({ placeholder: "Error loading characters", options: [] })
       currentTextInput.update({ value: `Backend error: ${payload.error}` })
       return
     }
 
     if (payload.type === 'init_data') {
+      initRequestSeq++ // a response arrived — cancel the init watchdog
       container.style.display = 'flex'
       permissionWarning.style.display = 'none'
 
@@ -275,6 +300,7 @@ export function setup(ctx: SpindleFrontendContext) {
     }
 
     if (payload.type === 'char_text_result') {
+      charTextRequestSeq++ // a response arrived — cancel the char-text watchdog
       originalTextRaw = payload.text
       categoryVariants = payload.variants || []
       selectedVersionKey = 'live'
@@ -285,12 +311,17 @@ export function setup(ctx: SpindleFrontendContext) {
       
       renderVariantsDropdown()
     }
+
+    if (payload.type === 'char_text_error') {
+      charTextRequestSeq++ // a response arrived — cancel the char-text watchdog
+      currentTextInput.update({ value: `Couldn't load this text: ${payload.error}` })
+    }
     
     if (payload.type === 'generate_result') {
       generateBtn.textContent = 'Rewrite with AI'
       generateBtn.disabled = false
       resultInput.update({ value: payload.result })
-      saveResultBtn.style.display = 'block' // Show save-result button
+      saveResultBtn.style.display = 'block'
     }
     
     if (payload.type === 'generate_failed') {
@@ -298,11 +329,9 @@ export function setup(ctx: SpindleFrontendContext) {
       generateBtn.disabled = false
     }
 
-    // New variant successfully added to history
     if (payload.type === 'save_version_success') {
       categoryVariants = payload.variants || []
       
-      // Auto-select the newly added version
       if (categoryVariants.length > 0) {
         selectedVersionKey = (categoryVariants.length - 1).toString()
         currentTextInput.update({ value: categoryVariants[categoryVariants.length - 1] })
@@ -313,27 +342,33 @@ export function setup(ctx: SpindleFrontendContext) {
 
       renderVariantsDropdown()
       
-      // Hide result saver after saving
       resultInput.update({ value: '' })
       saveResultBtn.style.display = 'none'
     }
 
-    // Overwrote the actual active card successfully
     if (payload.type === 'apply_success') {
       originalTextRaw = payload.text
-      selectedVersionKey = 'live' // Snap dropdown back to show it matches live text
+      selectedVersionKey = 'live'
       
       renderVariantsDropdown()
       currentTextInput.update({ value: originalTextRaw })
       
-      // Refresh list to sync card text
       requestInitData()
     }
   })
 
+  // FIXED: Handles modern paths (/chat/abc) and legacy hash routing (/index.html#/chat/abc)
   function requestInitData() {
-    const match = window.location.hash.match(/\/(characters|chat)\/([a-zA-Z0-9_-]+)/)
+    const seq = ++initRequestSeq
+    const currentUrl = window.location.pathname + window.location.hash
+    const match = currentUrl.match(/\/(characters|chat)\/([a-zA-Z0-9_-]+)/)
     ctx.sendToBackend({ type: 'get_init_data', routeType: match ? match[1] : null, routeId: match ? match[2] : null })
+    setTimeout(() => {
+      if (seq === initRequestSeq) {
+        charSelect.update({ placeholder: "Backend didn't respond — try reopening this tab", options: [] })
+        currentTextInput.update({ value: 'The extension backend did not respond to the initial load request. Try closing and reopening this panel, or reloading Lumiverse.' })
+      }
+    }, WATCHDOG_MS)
   }
 
   requestInitData()
@@ -341,6 +376,7 @@ export function setup(ctx: SpindleFrontendContext) {
   return () => {
     tab.destroy()
     unsubPermissions()
+    unsubTabActivate()
     activeMounts.forEach(m => m?.destroy?.())
   }
 }
