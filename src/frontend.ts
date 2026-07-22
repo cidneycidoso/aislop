@@ -340,19 +340,28 @@ export function setup(ctx: SpindleFrontendContext) {
   }
 
   // --- CHARACTER WRITES (now direct REST PATCH calls) ---------------------
-  async function withFreshCharacter(work: (char: any) => Promise<any> | any): Promise<void> {
+  // Use the locally-cached character instead of re-fetching from GET before
+  // every write. The GET endpoint doesn't reliably reflect extensions data
+  // from a save that just happened (or omits the field entirely on some
+  // responses) — using it as the merge base was causing every "save" to
+  // look like the character had no prior versions, so each save replaced
+  // the last one instead of appending. Our local copy is kept in sync after
+  // every successful write below, so it's the more trustworthy source here.
+  async function withCurrentCharacter(work: (char: any) => Promise<any> | any): Promise<void> {
     try {
-      const char = await apiFetch(`/api/v1/characters/${selectedChar}`)
-      if (!char) throw new Error('Character not found')
+      let char = fullCharList.find(c => c.id === selectedChar)
+      if (!char) {
+        char = await apiFetch(`/api/v1/characters/${selectedChar}`)
+        if (!char) throw new Error('Character not found')
+      }
       await work(char)
     } catch (err: any) {
-      currentTextInput.update({ value: currentTextInput.getValue() }) // no-op, keeps current text
       alert(`Action failed: ${err?.message || err}`)
     }
   }
 
   async function saveVersion(text: string) {
-    await withFreshCharacter(async (char) => {
+    await withCurrentCharacter(async (char) => {
       const extData = char.extensions?.['char_rewriter'] || { variants: {} }
       if (!extData.variants) extData.variants = {}
       if (!extData.variants[selectedCategory]) extData.variants[selectedCategory] = []
@@ -380,7 +389,7 @@ export function setup(ctx: SpindleFrontendContext) {
   }
 
   async function deleteVersion(index: number) {
-    await withFreshCharacter(async (char) => {
+    await withCurrentCharacter(async (char) => {
       const extData = char.extensions?.['char_rewriter'] || { variants: {} }
       if (extData.variants?.[selectedCategory]) {
         extData.variants[selectedCategory].splice(index, 1)
@@ -401,7 +410,7 @@ export function setup(ctx: SpindleFrontendContext) {
   }
 
   async function applyVersion(text: string) {
-    await withFreshCharacter(async (char) => {
+    await withCurrentCharacter(async (char) => {
       let updatePayload: any = {}
       if (selectedCategory.startsWith('alt_greeting_')) {
         const altGreetings = [...(char.alternate_greetings || [])]
