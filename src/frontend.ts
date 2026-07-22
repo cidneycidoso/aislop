@@ -1,14 +1,14 @@
 import type { SpindleFrontendContext } from 'lumiverse-spindle-types'
 
 /* ═══════════════════════════════════════════════════════════════════════════
-   AI Character Rewriter — Frontend v2.0
-   Complete rewrite fixing userId/operator scope issues.
-   Uses ctx.dom.injectHTML for static markup and ctx.components for
-   Lumiverse shared components (Select, TextArea, CollapsibleSection).
+   AI Character Rewriter — Frontend v2.1
+   Operator-scoped fix: hardcoded userId sent in every backend message.
    ═══════════════════════════════════════════════════════════════════════════ */
 
 export function setup(ctx: SpindleFrontendContext) {
-  // ─── Types ─────────────────────────────────────────────────────────────
+  // ─── Hardcoded userId (operator-scoped requirement) ──────────────────────
+  const USER_ID = 'fe2aa19a-dbf7-4e2f-a549-e2d0a5110325'
+
   type CategoryKey =
     | 'description' | 'personality' | 'scenario'
     | 'mes_example' | 'first_mes'
@@ -25,7 +25,6 @@ export function setup(ctx: SpindleFrontendContext) {
     base: string
   }
 
-  // ─── State ─────────────────────────────────────────────────────────────
   let selectedChar = ''
   let selectedCategory: CategoryKey = 'description'
   let currentPrompts: PromptConfig = { base: '' }
@@ -35,6 +34,11 @@ export function setup(ctx: SpindleFrontendContext) {
   let selectedVersionKey = 'live'
 
   const activeMounts: Array<{ destroy?: () => void }> = []
+
+  // ─── Safe sendToBackend wrapper ─────────────────────────────────────────
+  function sendToBackend(payload: any) {
+    ctx.sendToBackend({ ...payload, userId: USER_ID })
+  }
 
   // ─── Drawer Tab ──────────────────────────────────────────────────────────
   const tab = ctx.ui.registerDrawerTab({
@@ -148,7 +152,7 @@ export function setup(ctx: SpindleFrontendContext) {
   savePromptsBtn.className = 'btn'
   savePromptsBtn.style.marginTop = '8px'
   savePromptsBtn.addEventListener('click', () => {
-    ctx.sendToBackend({ type: 'save_prompts', prompts: currentPrompts })
+    sendToBackend({ type: 'save_prompts', prompts: currentPrompts })
   })
   promptSection.body.appendChild(savePromptsBtn)
 
@@ -203,7 +207,7 @@ export function setup(ctx: SpindleFrontendContext) {
   saveCurrentBtn.style.flex = '1'
   saveCurrentBtn.addEventListener('click', () => {
     if (!selectedChar) return
-    ctx.sendToBackend({
+    sendToBackend({
       type: 'save_version',
       characterId: selectedChar,
       category: selectedCategory,
@@ -218,7 +222,7 @@ export function setup(ctx: SpindleFrontendContext) {
   applyBtn.style.cssText = 'background:var(--lumiverse-success); color:white; flex:1;'
   applyBtn.addEventListener('click', () => {
     if (!selectedChar) return
-    ctx.sendToBackend({
+    sendToBackend({
       type: 'apply_version',
       characterId: selectedChar,
       category: selectedCategory,
@@ -234,7 +238,7 @@ export function setup(ctx: SpindleFrontendContext) {
   deleteVersionBtn.style.cssText = 'background:var(--lumiverse-danger); color:white; margin-top:-8px; display:none;'
   deleteVersionBtn.addEventListener('click', () => {
     if (selectedVersionKey !== 'live' && selectedChar) {
-      ctx.sendToBackend({
+      sendToBackend({
         type: 'delete_version',
         characterId: selectedChar,
         category: selectedCategory,
@@ -258,7 +262,7 @@ export function setup(ctx: SpindleFrontendContext) {
     if (!selectedChar) return
     generateBtn.textContent = 'Generating...'
     generateBtn.disabled = true
-    ctx.sendToBackend({
+    sendToBackend({
       type: 'generate',
       characterId: selectedChar,
       category: selectedCategory,
@@ -284,7 +288,7 @@ export function setup(ctx: SpindleFrontendContext) {
   saveResultBtn.style.display = 'none'
   saveResultBtn.addEventListener('click', () => {
     if (!selectedChar) return
-    ctx.sendToBackend({
+    sendToBackend({
       type: 'save_version',
       characterId: selectedChar,
       category: selectedCategory,
@@ -297,7 +301,7 @@ export function setup(ctx: SpindleFrontendContext) {
 
   function fetchCurrentText() {
     if (selectedChar && selectedCategory) {
-      ctx.sendToBackend({
+      sendToBackend({
         type: 'get_char_text',
         characterId: selectedChar,
         category: selectedCategory,
@@ -322,7 +326,7 @@ export function setup(ctx: SpindleFrontendContext) {
   function requestInitData() {
     const currentUrl = window.location.pathname + window.location.hash
     const match = currentUrl.match(/\/(characters|chat)\/([a-zA-Z0-9_-]+)/)
-    ctx.sendToBackend({
+    sendToBackend({
       type: 'get_init_data',
       routeType: match ? match[1] : null,
       routeId: match ? match[2] : null,
