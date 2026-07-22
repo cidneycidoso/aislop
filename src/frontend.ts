@@ -133,7 +133,7 @@ export function setup(ctx: SpindleFrontendContext) {
   activeMounts.push(variantSelect)
 
   const currentTextSlot = document.createElement('div')
-  currentTextSlot.appendChild(currentTextSlot)
+  container.appendChild(currentTextSlot) // FIXED: Replaced circular appendChild
   const currentTextInput = ctx.components.mountTextArea(currentTextSlot, {
     value: '', rows: 5, placeholder: 'Select a character card above...'
   })
@@ -328,7 +328,6 @@ export function setup(ctx: SpindleFrontendContext) {
     }
   })
 
-  // FIXED: Supports both modern clean paths (/chat/abc) and legacy hash routing (/index.html#/chat/abc)
   function requestInitData() {
     const currentUrl = window.location.pathname + window.location.hash
     const match = currentUrl.match(/\/(characters|chat)\/([a-zA-Z0-9_-]+)/)
