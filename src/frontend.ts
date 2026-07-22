@@ -269,14 +269,30 @@ export function setup(ctx: SpindleFrontendContext) {
   aiDivider.style.cssText = 'border-top: 1px solid var(--lumiverse-border); margin: 8px 0;'
   container.appendChild(aiDivider)
 
+  let isGenerating = false
+  let streamedText = ''
+
   const generateBtn = document.createElement('button')
   generateBtn.textContent = 'Rewrite with AI'
   generateBtn.className = 'btn'
   generateBtn.style.cssText = 'background: var(--lumiverse-primary); color: white;'
   generateBtn.onclick = () => {
     if (!selectedChar) return
-    generateBtn.textContent = 'Generating...'
-    generateBtn.disabled = true
+
+    if (isGenerating) {
+      // Second click while a generation is in flight — cancel it. Whatever
+      // text streamed in so far stays in the result box; nothing is lost.
+      generateBtn.disabled = true
+      generateBtn.textContent = 'Cancelling...'
+      ctx.sendToBackend({ type: 'generate_cancel' })
+      return
+    }
+
+    isGenerating = true
+    streamedText = ''
+    resultInput.update({ value: '' })
+    saveResultBtn.style.display = 'none'
+    generateBtn.textContent = 'Stop Generating'
     ctx.sendToBackend({
       type: 'generate', characterId: selectedChar, category: selectedCategory, originalText: currentTextInput.getValue()
     })
@@ -467,14 +483,32 @@ export function setup(ctx: SpindleFrontendContext) {
       basePromptInput.update({ value: currentPrompts.base })
     }
 
-    if (payload.type === 'generate_result') {
+    if (payload.type === 'generate_token') {
+      streamedText += payload.token
+      resultInput.update({ value: streamedText })
+    }
+
+    if (payload.type === 'generate_done') {
+      isGenerating = false
       generateBtn.textContent = 'Rewrite with AI'
       generateBtn.disabled = false
+      // Prefer the aggregated final content from the 'done' chunk in case
+      // it differs at all from what we accumulated token-by-token.
       resultInput.update({ value: payload.result })
       saveResultBtn.style.display = 'block'
     }
 
+    if (payload.type === 'generate_cancelled') {
+      isGenerating = false
+      generateBtn.textContent = 'Rewrite with AI'
+      generateBtn.disabled = false
+      // Keep whatever streamed in before the cancel — let the user save or
+      // keep editing the partial result instead of losing it.
+      if (streamedText) saveResultBtn.style.display = 'block'
+    }
+
     if (payload.type === 'generate_failed') {
+      isGenerating = false
       generateBtn.textContent = 'Rewrite with AI'
       generateBtn.disabled = false
     }
