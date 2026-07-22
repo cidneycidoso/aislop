@@ -9,40 +9,18 @@ const DEFAULT_PROMPTS = {
   mes_example: "Format as dialogue history. Focus on capturing the exact speech patterns, tone, and formatting of the character."
 }
 
-// ------------------------------------------------------------------
-// SAFE RPC WRAPPER: Exposes exact failure points if an endpoint hangs
-// ------------------------------------------------------------------
-const withTimeout = <T>(promise: Promise<T>, ms: number, label: string): Promise<T> => {
-  return new Promise((resolve, reject) => {
-    let done = false
-    const timer = setTimeout(() => {
-      if (!done) { done = true; reject(new Error(`Timeout at ${label} after ${ms}ms`)) }
-    }, ms)
-    promise.then(res => {
-      if (!done) { done = true; clearTimeout(timer); resolve(res) }
-    }).catch(err => {
-      if (!done) { done = true; clearTimeout(timer); reject(err) }
-    })
-  })
-}
-
-// ------------------------------------------------------------------
-
-async function fetchAllCharacters(userId: string): Promise<any[]> {
+// 1-argument signature. Lumiverse automatically resolves the user context here.
+async function fetchAllCharacters(): Promise<any[]> {
   const allChars: any[] = []
   let offset = 0
-  const limit = 200 
+  const limit = 200 // Max limit allowed by Lumiverse schema
   let hasMore = true
 
   while (hasMore) {
-    // 1. List APIs take options object. userId goes INSIDE the options bag.
-    const chars = await withTimeout(
-      (spindle.characters.list as any)({ limit, offset, userId }), 
-      5000, 
-      'characters.list'
-    )
-    
-    if (!chars || !chars.data || chars.data.length === 0) break
+    // Entities (Characters, Chats) infer the user context automatically from the event boundary. 
+    // DO NOT add userId here, or strict schema validation will drop the request and hang the UI!
+    const chars = await spindle.characters.list({ limit, offset })
+    if (!chars || !chars.data) break
     
     allChars.push(...chars.data)
     
@@ -56,19 +34,20 @@ async function fetchAllCharacters(userId: string): Promise<any[]> {
 }
 
 async function checkAndSendInitData(userId: string, routeType?: string | null, routeId?: string | null) {
+  const hasCharacters = spindle.permissions.has('characters')
+  const hasGeneration = spindle.permissions.has('generation')
+  const hasChats = spindle.permissions.has('chats')
+
+  if (!hasCharacters || !hasGeneration) {
+    spindle.sendToFrontend({ type: 'permission_status', hasCharacters, hasGeneration }, userId)
+    return
+  }
+
   try {
-    const hasCharacters = spindle.permissions.has('characters')
-    const hasGeneration = spindle.permissions.has('generation')
-    const hasChats = spindle.permissions.has('chats')
-
-    if (!hasCharacters || !hasGeneration) {
-      spindle.sendToFrontend({ type: 'permission_status', hasCharacters, hasGeneration }, userId)
-      return
-    }
-
-    const charsData = await fetchAllCharacters(userId)
+    const charsData = await fetchAllCharacters()
     
-    // 2. Storage APIs take options object. userId goes INSIDE the options bag.
+    // Utilities (Storage, Generation) REQUIRE explicitly passing userId for operator-scoped extensions.
+    // userStorage requires it in the options bag (already correct).
     const prompts = await spindle.userStorage.getJson('prompts.json', { fallback: DEFAULT_PROMPTS, userId })
     
     let activeCharId = null
@@ -76,18 +55,16 @@ async function checkAndSendInitData(userId: string, routeType?: string | null, r
       activeCharId = routeId
     } else if (routeType === 'chat' && routeId && hasChats) {
       try {
-        // 3. Entity getters have no options bag. userId is a trailing STRING.
-        const chat = await withTimeout((spindle.chats.get as any)(routeId, userId), 3000, 'chats.get')
+        const chat = await spindle.chats.get(routeId)
         if (chat) activeCharId = chat.character_id 
-      } catch (e) { spindle.log.warn(`chats.get failed: ${e}`) }
+      } catch (err: any) {}
     }
     
     if (!activeCharId && hasChats) {
       try {
-        // 3. Entity getters have no options bag. userId is a trailing STRING.
-        const activeChat = await withTimeout((spindle.chats.getActive as any)(userId), 3000, 'chats.getActive')
+        const activeChat = await spindle.chats.getActive()
         if (activeChat) activeCharId = activeChat.character_id
-      } catch (e) { spindle.log.warn(`chats.getActive failed: ${e}`) }
+      } catch (err: any) {}
     }
     
     spindle.sendToFrontend({ 
@@ -99,7 +76,6 @@ async function checkAndSendInitData(userId: string, routeType?: string | null, r
     
   } catch (err: any) {
     spindle.log.error(`Init error: ${err.message}`)
-    // This will vividly print exactly what failed to load directly on the extension UI
     spindle.sendToFrontend({ type: 'init_error', error: err.message }, userId)
   }
 }
@@ -112,8 +88,7 @@ spindle.onFrontendMessage(async (payload: any, userId: string) => {
   else if (payload.type === 'get_char_text') {
     if (!spindle.permissions.has('characters')) return
     try {
-      // 3. Entity getters have no options bag. userId is a trailing STRING.
-      const char = await (spindle.characters.get as any)(payload.characterId, userId)
+      const char = await spindle.characters.get(payload.characterId)
       if (char) {
         let text = ""
         if (payload.category.startsWith('alt_greeting_')) {
@@ -135,7 +110,6 @@ spindle.onFrontendMessage(async (payload: any, userId: string) => {
 
   else if (payload.type === 'save_prompts') {
     try {
-      // 2. Storage APIs take options object. userId goes INSIDE the options bag.
       await spindle.userStorage.setJson('prompts.json', payload.prompts, { userId })
       spindle.toast.success("Instructions updated!")
       spindle.sendToFrontend({ type: 'prompts_updated', prompts: payload.prompts }, userId)
@@ -157,15 +131,15 @@ spindle.onFrontendMessage(async (payload: any, userId: string) => {
 
       spindle.toast.info("AI is rewriting...")
       
-      // 4. Generate payload is not an options bag. userId is a trailing STRING.
-      const result = await (spindle.generate.quiet as any)({
+      // THE FIX: spindle.generate utilities require `userId` explicitly passed as the secondary argument.
+      const result = await spindle.generate.quiet({
         messages: [
           { role: 'system', content: sysPrompt },
           { role: 'user', content: `Original Text:\n${payload.originalText}` }
         ]
       }, userId) 
 
-      const genText = result?.text || result?.content || ""
+      const genText = result.content || result.text || ""
       spindle.sendToFrontend({ type: 'generate_result', result: genText }, userId)
     } catch (err: any) {
       spindle.toast.error(`Generation failed: ${err.message}`)
@@ -176,7 +150,7 @@ spindle.onFrontendMessage(async (payload: any, userId: string) => {
   else if (payload.type === 'save_version') {
     if (!spindle.permissions.has('characters')) return
     try {
-      const char = await (spindle.characters.get as any)(payload.characterId, userId)
+      const char = await spindle.characters.get(payload.characterId)
       if (!char) throw new Error("Character not found")
 
       const extData = char.extensions?.['char_rewriter'] || { variants: {} }
@@ -187,11 +161,9 @@ spindle.onFrontendMessage(async (payload: any, userId: string) => {
       if (currentList.length === 0 || currentList[currentList.length - 1] !== payload.text) {
         extData.variants[payload.category].push(payload.text)
         
-        // 5. Entity mutations have no options bag. userId is a trailing STRING.
-        await (spindle.characters.update as any)(payload.characterId, {
+        await spindle.characters.update(payload.characterId, {
           extensions: { 'char_rewriter': extData }
-        }, userId)
-        
+        })
         spindle.toast.success("Saved to draft history!")
       } else {
         spindle.toast.info("This exact version is already saved.")
@@ -206,18 +178,16 @@ spindle.onFrontendMessage(async (payload: any, userId: string) => {
   else if (payload.type === 'delete_version') {
     if (!spindle.permissions.has('characters')) return
     try {
-      const char = await (spindle.characters.get as any)(payload.characterId, userId)
+      const char = await spindle.characters.get(payload.characterId)
       if (!char) throw new Error("Character not found")
 
       const extData = char.extensions?.['char_rewriter'] || { variants: {} }
       if (extData.variants?.[payload.category]) {
         extData.variants[payload.category].splice(payload.index, 1)
         
-        // 5. Entity mutations have no options bag. userId is a trailing STRING.
-        await (spindle.characters.update as any)(payload.characterId, {
+        await spindle.characters.update(payload.characterId, {
           extensions: { 'char_rewriter': extData }
-        }, userId)
-        
+        })
         spindle.toast.success("Draft version deleted.")
       }
 
@@ -232,7 +202,7 @@ spindle.onFrontendMessage(async (payload: any, userId: string) => {
     if (!spindle.permissions.has('characters')) return
     try {
       let updatePayload: any = {}
-      const char = await (spindle.characters.get as any)(payload.characterId, userId)
+      const char = await spindle.characters.get(payload.characterId)
       if (!char) throw new Error("Character not found")
 
       if (payload.category.startsWith('alt_greeting_')) {
@@ -244,9 +214,7 @@ spindle.onFrontendMessage(async (payload: any, userId: string) => {
         updatePayload = { [payload.category]: payload.text }
       }
 
-      // 5. Entity mutations have no options bag. userId is a trailing STRING.
-      await (spindle.characters.update as any)(payload.characterId, updatePayload, userId)
-      
+      await spindle.characters.update(payload.characterId, updatePayload)
       spindle.toast.success("Card updated successfully!")
       spindle.sendToFrontend({ type: 'apply_success', text: payload.text }, userId)
     } catch (err: any) {
