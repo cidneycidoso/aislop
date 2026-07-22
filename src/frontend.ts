@@ -122,6 +122,21 @@ export function setup(ctx: SpindleFrontendContext) {
   let fullCharList: any[] = []
   let hasGeneration = true // assume true until status_result says otherwise
 
+  // Full character detail (including `extensions`) is fetched and cached
+  // separately from `fullCharList`. The list endpoint used to populate the
+  // character dropdown returns a slimmer DTO that omits `extensions` —
+  // using that slim object as the merge base for saving/deleting/applying
+  // versions was silently wiping out previously saved variants for every
+  // other category on each save. All version read/write paths below go
+  // through getCharDetail() instead of `fullCharList.find(...)`.
+  const charDetailCache = new Map<string, any>()
+  async function getCharDetail(id: string): Promise<any> {
+    if (charDetailCache.has(id)) return charDetailCache.get(id)
+    const full = await apiFetch(`/api/v1/characters/${id}`)
+    charDetailCache.set(id, full)
+    return full
+  }
+
   let originalTextRaw = ''
   let categoryVariants: string[] = []
   let selectedVersionKey = 'live'
@@ -142,7 +157,6 @@ export function setup(ctx: SpindleFrontendContext) {
     value: '', placeholder: "Loading characters...", options: [{ value: '', label: 'Loading characters...' }],
     onChange: (v) => {
       selectedChar = v
-      updateCategoryOptions()
       loadCurrentText()
     }
   })
@@ -164,8 +178,7 @@ export function setup(ctx: SpindleFrontendContext) {
   })
   activeMounts.push(catSelect)
 
-  function updateCategoryOptions() {
-    const char = fullCharList.find(c => c.id === selectedChar)
+  function updateCategoryOptions(char: any) {
     const options = [
       { value: 'description', label: 'Description' },
       { value: 'personality', label: 'Personality' },
@@ -315,14 +328,35 @@ export function setup(ctx: SpindleFrontendContext) {
 
 
   // --- CHARACTER TEXT (now purely local — no round trip) -----------------
-  function loadCurrentText() {
-    const char = fullCharList.find(c => c.id === selectedChar)
-    if (!char) {
+  let loadTextSeq = 0
+  async function loadCurrentText() {
+    if (!selectedChar) {
       currentTextInput.update({ value: 'Select a character card above...' })
       variantSelectSlot.style.display = 'none'
       deleteVersionBtn.style.display = 'none'
       return
     }
+
+    const seq = ++loadTextSeq
+
+    // Rough pass with whatever we already have (slim list data) so the
+    // category dropdown isn't empty while the full detail fetch is in
+    // flight, then correct it below once detail arrives.
+    updateCategoryOptions(fullCharList.find(c => c.id === selectedChar))
+
+    let char: any
+    try {
+      char = await getCharDetail(selectedChar)
+    } catch (err: any) {
+      if (seq !== loadTextSeq) return // a newer selection started loading since
+      currentTextInput.update({ value: `Couldn't load character detail: ${err?.message || err}` })
+      variantSelectSlot.style.display = 'none'
+      deleteVersionBtn.style.display = 'none'
+      return
+    }
+    if (seq !== loadTextSeq) return // user picked something else while this was in flight
+
+    updateCategoryOptions(char)
 
     let text = ""
     if (selectedCategory.startsWith('alt_greeting_')) {
@@ -356,20 +390,15 @@ export function setup(ctx: SpindleFrontendContext) {
   }
 
   // --- CHARACTER WRITES (now direct REST PATCH calls) ---------------------
-  // Use the locally-cached character instead of re-fetching from GET before
-  // every write. The GET endpoint doesn't reliably reflect extensions data
-  // from a save that just happened (or omits the field entirely on some
-  // responses) — using it as the merge base was causing every "save" to
-  // look like the character had no prior versions, so each save replaced
-  // the last one instead of appending. Our local copy is kept in sync after
-  // every successful write below, so it's the more trustworthy source here.
+  // Merge against getCharDetail()'s cached object (single-character GET,
+  // includes extensions), never against fullCharList's slim list entry.
+  // After each successful write we mutate that cached object in place
+  // (rather than re-fetching), so a rapid second edit merges against what
+  // we actually just wrote instead of relying on the GET's own consistency.
   async function withCurrentCharacter(work: (char: any) => Promise<any> | any): Promise<void> {
     try {
-      let char = fullCharList.find(c => c.id === selectedChar)
-      if (!char) {
-        char = await apiFetch(`/api/v1/characters/${selectedChar}`)
-        if (!char) throw new Error('Character not found')
-      }
+      const char = await getCharDetail(selectedChar)
+      if (!char) throw new Error('Character not found')
       await work(char)
     } catch (err: any) {
       alert(`Action failed: ${err?.message || err}`)
@@ -385,15 +414,15 @@ export function setup(ctx: SpindleFrontendContext) {
       const list = extData.variants[selectedCategory]
       if (list.length === 0 || list[list.length - 1] !== text) {
         list.push(text)
+        const mergedExtensions = { ...char.extensions, char_rewriter: extData }
         await apiFetch(`/api/v1/characters/${selectedChar}`, {
           method: 'PATCH',
-          body: JSON.stringify({ extensions: { ...char.extensions, char_rewriter: extData } })
+          body: JSON.stringify({ extensions: mergedExtensions })
         })
+        // Keep the cached detail object (the merge base for the *next*
+        // save/delete/apply) in sync with what we just wrote.
+        char.extensions = mergedExtensions
       }
-
-      // Keep the in-memory copy in sync so we don't need a full re-fetch.
-      const cached = fullCharList.find(c => c.id === selectedChar)
-      if (cached) cached.extensions = { ...cached.extensions, char_rewriter: extData }
 
       categoryVariants = extData.variants[selectedCategory]
       selectedVersionKey = categoryVariants.length > 0 ? (categoryVariants.length - 1).toString() : 'live'
@@ -409,14 +438,13 @@ export function setup(ctx: SpindleFrontendContext) {
       const extData = char.extensions?.['char_rewriter'] || { variants: {} }
       if (extData.variants?.[selectedCategory]) {
         extData.variants[selectedCategory].splice(index, 1)
+        const mergedExtensions = { ...char.extensions, char_rewriter: extData }
         await apiFetch(`/api/v1/characters/${selectedChar}`, {
           method: 'PATCH',
-          body: JSON.stringify({ extensions: { ...char.extensions, char_rewriter: extData } })
+          body: JSON.stringify({ extensions: mergedExtensions })
         })
+        char.extensions = mergedExtensions
       }
-
-      const cached = fullCharList.find(c => c.id === selectedChar)
-      if (cached) cached.extensions = { ...cached.extensions, char_rewriter: extData }
 
       categoryVariants = extData.variants?.[selectedCategory] || []
       selectedVersionKey = 'live'
@@ -442,8 +470,12 @@ export function setup(ctx: SpindleFrontendContext) {
         body: JSON.stringify(updatePayload)
       })
 
-      const cached = fullCharList.find(c => c.id === selectedChar)
-      if (cached) Object.assign(cached, updatePayload)
+      // Keep both caches in sync: the detail cache (source of truth for
+      // future save/delete/apply merges) and the slim list entry (source
+      // for the dropdown label/avatar).
+      Object.assign(char, updatePayload)
+      const listEntry = fullCharList.find(c => c.id === selectedChar)
+      if (listEntry) Object.assign(listEntry, updatePayload)
 
       originalTextRaw = text
       selectedVersionKey = 'live'
@@ -531,6 +563,11 @@ export function setup(ctx: SpindleFrontendContext) {
 
     requestStatus()
 
+    // This is an explicit resync point (initial load, or the user coming
+    // back to the tab) — drop cached character detail so we pick up any
+    // edits made elsewhere instead of reusing stale data indefinitely.
+    charDetailCache.clear()
+
     try {
       const currentUrl = window.location.pathname + window.location.hash
       const match = currentUrl.match(/\/(characters|chat)\/([a-zA-Z0-9_-]+)/)
@@ -552,8 +589,11 @@ export function setup(ctx: SpindleFrontendContext) {
         }))
       })
 
-      updateCategoryOptions()
-      if (selectedChar) loadCurrentText()
+      if (selectedChar) {
+        loadCurrentText()
+      } else {
+        updateCategoryOptions(undefined)
+      }
     } catch (err: any) {
       charSelect.update({ placeholder: "Error loading characters", options: [] })
       currentTextInput.update({ value: `Couldn't load characters: ${err?.message || err}` })
