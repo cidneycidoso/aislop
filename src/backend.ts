@@ -9,17 +9,15 @@ const DEFAULT_PROMPTS = {
   mes_example: "Format as dialogue history. Focus on capturing the exact speech patterns, tone, and formatting of the character."
 }
 
-// 1-argument signature. Lumiverse automatically resolves the user context here.
-async function fetchAllCharacters(): Promise<any[]> {
+async function fetchAllCharacters(userId: string): Promise<any[]> {
   const allChars: any[] = []
   let offset = 0
-  const limit = 200 // Max limit allowed by Lumiverse schema
+  const limit = 200
   let hasMore = true
 
   while (hasMore) {
-    // Entities (Characters, Chats) infer the user context automatically from the event boundary. 
-    // DO NOT add userId here, or strict schema validation will drop the request and hang the UI!
-    const chars = await spindle.characters.list({ limit, offset })
+    // Options method: userId property goes inside options object
+    const chars = await (spindle.characters.list as any)({ limit, offset, userId })
     if (!chars || !chars.data) break
     
     allChars.push(...chars.data)
@@ -44,10 +42,9 @@ async function checkAndSendInitData(userId: string, routeType?: string | null, r
   }
 
   try {
-    const charsData = await fetchAllCharacters()
+    const charsData = await fetchAllCharacters(userId)
     
-    // Utilities (Storage, Generation) REQUIRE explicitly passing userId for operator-scoped extensions.
-    // userStorage requires it in the options bag (already correct).
+    // Options method: userId property goes inside options object
     const prompts = await spindle.userStorage.getJson('prompts.json', { fallback: DEFAULT_PROMPTS, userId })
     
     let activeCharId = null
@@ -55,14 +52,16 @@ async function checkAndSendInitData(userId: string, routeType?: string | null, r
       activeCharId = routeId
     } else if (routeType === 'chat' && routeId && hasChats) {
       try {
-        const chat = await spindle.chats.get(routeId)
+        // Positional method: userId is a trailing string argument
+        const chat = await (spindle.chats.get as any)(routeId, userId)
         if (chat) activeCharId = chat.character_id 
       } catch (err: any) {}
     }
     
     if (!activeCharId && hasChats) {
       try {
-        const activeChat = await spindle.chats.getActive()
+        // Positional method: userId is a trailing string argument
+        const activeChat = await (spindle.chats.getActive as any)(userId)
         if (activeChat) activeCharId = activeChat.character_id
       } catch (err: any) {}
     }
@@ -88,7 +87,8 @@ spindle.onFrontendMessage(async (payload: any, userId: string) => {
   else if (payload.type === 'get_char_text') {
     if (!spindle.permissions.has('characters')) return
     try {
-      const char = await spindle.characters.get(payload.characterId)
+      // Positional method: userId is a trailing string argument
+      const char = await (spindle.characters.get as any)(payload.characterId, userId)
       if (char) {
         let text = ""
         if (payload.category.startsWith('alt_greeting_')) {
@@ -110,6 +110,7 @@ spindle.onFrontendMessage(async (payload: any, userId: string) => {
 
   else if (payload.type === 'save_prompts') {
     try {
+      // Options method: userId property goes inside options object
       await spindle.userStorage.setJson('prompts.json', payload.prompts, { userId })
       spindle.toast.success("Instructions updated!")
       spindle.sendToFrontend({ type: 'prompts_updated', prompts: payload.prompts }, userId)
@@ -125,14 +126,15 @@ spindle.onFrontendMessage(async (payload: any, userId: string) => {
       return
     }
     try {
+      // Options method: userId property goes inside options object
       const prompts = await spindle.userStorage.getJson('prompts.json', { fallback: DEFAULT_PROMPTS, userId })
       const promptCat = payload.category.startsWith('alt_greeting_') ? 'first_mes' : payload.category
       const sysPrompt = `${prompts.base}\n\nCategory guidance:\n${prompts[promptCat] || ""}`
 
       spindle.toast.info("AI is rewriting...")
       
-      // THE FIX: spindle.generate utilities require `userId` explicitly passed as the secondary argument.
-      const result = await spindle.generate.quiet({
+      // Positional method: userId is a trailing string argument
+      const result = await (spindle.generate.quiet as any)({
         messages: [
           { role: 'system', content: sysPrompt },
           { role: 'user', content: `Original Text:\n${payload.originalText}` }
@@ -150,7 +152,8 @@ spindle.onFrontendMessage(async (payload: any, userId: string) => {
   else if (payload.type === 'save_version') {
     if (!spindle.permissions.has('characters')) return
     try {
-      const char = await spindle.characters.get(payload.characterId)
+      // Positional method: userId is a trailing string argument
+      const char = await (spindle.characters.get as any)(payload.characterId, userId)
       if (!char) throw new Error("Character not found")
 
       const extData = char.extensions?.['char_rewriter'] || { variants: {} }
@@ -161,9 +164,11 @@ spindle.onFrontendMessage(async (payload: any, userId: string) => {
       if (currentList.length === 0 || currentList[currentList.length - 1] !== payload.text) {
         extData.variants[payload.category].push(payload.text)
         
-        await spindle.characters.update(payload.characterId, {
+        // Positional method: userId is a trailing string argument
+        await (spindle.characters.update as any)(payload.characterId, {
           extensions: { 'char_rewriter': extData }
-        })
+        }, userId)
+        
         spindle.toast.success("Saved to draft history!")
       } else {
         spindle.toast.info("This exact version is already saved.")
@@ -178,16 +183,19 @@ spindle.onFrontendMessage(async (payload: any, userId: string) => {
   else if (payload.type === 'delete_version') {
     if (!spindle.permissions.has('characters')) return
     try {
-      const char = await spindle.characters.get(payload.characterId)
+      // Positional method: userId is a trailing string argument
+      const char = await (spindle.characters.get as any)(payload.characterId, userId)
       if (!char) throw new Error("Character not found")
 
       const extData = char.extensions?.['char_rewriter'] || { variants: {} }
       if (extData.variants?.[payload.category]) {
         extData.variants[payload.category].splice(payload.index, 1)
         
-        await spindle.characters.update(payload.characterId, {
+        // Positional method: userId is a trailing string argument
+        await (spindle.characters.update as any)(payload.characterId, {
           extensions: { 'char_rewriter': extData }
-        })
+        }, userId)
+        
         spindle.toast.success("Draft version deleted.")
       }
 
@@ -202,7 +210,8 @@ spindle.onFrontendMessage(async (payload: any, userId: string) => {
     if (!spindle.permissions.has('characters')) return
     try {
       let updatePayload: any = {}
-      const char = await spindle.characters.get(payload.characterId)
+      // Positional method: userId is a trailing string argument
+      const char = await (spindle.characters.get as any)(payload.characterId, userId)
       if (!char) throw new Error("Character not found")
 
       if (payload.category.startsWith('alt_greeting_')) {
@@ -214,7 +223,9 @@ spindle.onFrontendMessage(async (payload: any, userId: string) => {
         updatePayload = { [payload.category]: payload.text }
       }
 
-      await spindle.characters.update(payload.characterId, updatePayload)
+      // Positional method: userId is a trailing string argument
+      await (spindle.characters.update as any)(payload.characterId, updatePayload, userId)
+      
       spindle.toast.success("Card updated successfully!")
       spindle.sendToFrontend({ type: 'apply_success', text: payload.text }, userId)
     } catch (err: any) {
