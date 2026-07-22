@@ -4,8 +4,12 @@ export function setup(ctx: SpindleFrontendContext) {
   const tab = ctx.ui.registerDrawerTab({
     id: 'ai-character-rewriter',
     title: 'AI Character Rewriter',
-    shortName: 'Rewriter',
-    iconSvg: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>'
+    headerTitle: 'Character Rewriter',
+    shortName: 'Rewrite',
+    description: 'Rewrite character descriptions, personalities, and greetings with AI',
+    keywords: ['rewrite', 'character', 'ai', 'editor', 'greeting', 'prompt'],
+    // Explicit 20x20 dimensions ensure proper rendering and clickable hit box in sidebar
+    iconSvg: '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>'
   })
 
   // --- STATE ---
@@ -240,61 +244,3 @@ export function setup(ctx: SpindleFrontendContext) {
       deleteDraftBtn.style.display = 'none'
     } else {
       const idx = parseInt(selectedVersionKey, 10)
-      textViewerInput.update({ value: savedVariants[idx] || '' })
-      deleteDraftBtn.style.display = 'block'
-    }
-  }
-
-  function updateVariantOptions() {
-    const options = [{ value: 'live', label: 'Live Card Text' }]
-    savedVariants.forEach((_, i) => {
-      options.push({ value: i.toString(), label: `Draft Version ${i + 1}` })
-    })
-    variantSelect.update({ options, value: selectedVersionKey })
-    renderCurrentText()
-  }
-
-  // --- 5. AI GENERATION ---
-  const divider = document.createElement('div')
-  divider.style.cssText = 'border-top:1px solid var(--lumiverse-border, rgba(255,255,255,0.1)); margin:4px 0;'
-  container.appendChild(divider)
-
-  const generateBtn = document.createElement('button')
-  generateBtn.textContent = 'Rewrite with AI'
-  generateBtn.className = 'btn'
-  generateBtn.style.cssText = 'background:var(--lumiverse-primary, #6366f1); color:#fff; font-weight:600; padding:10px;'
-  generateBtn.onclick = () => {
-    if (!selectedCharId) return
-    generateBtn.disabled = true
-    generateBtn.textContent = 'Rewriting with AI...'
-    showStatus('AI is processing your request...', 'info')
-    ctx.sendToBackend({
-      type: 'generate_rewrite',
-      characterId: selectedCharId,
-      category: selectedCategory,
-      originalText: textViewerInput.getValue()
-    })
-  }
-  container.appendChild(generateBtn)
-
-  const aiResultSlot = document.createElement('div')
-  container.appendChild(aiResultSlot)
-
-  const aiResultInput = ctx.components.mountTextArea(aiResultSlot, {
-    value: '',
-    rows: 5,
-    placeholder: 'AI generated rewrite will appear here...'
-  })
-  activeMounts.push(aiResultInput)
-
-  const saveAiDraftBtn = document.createElement('button')
-  saveAiDraftBtn.textContent = 'Save AI Result as Draft'
-  saveAiDraftBtn.className = 'btn'
-  saveAiDraftBtn.style.cssText = 'display:none; background:var(--lumiverse-primary, #6366f1); color:#fff;'
-  saveAiDraftBtn.onclick = () => {
-    if (!selectedCharId || !aiResultInput.getValue()) return
-    ctx.sendToBackend({
-      type: 'save_draft',
-      characterId: selectedCharId,
-      category: selectedCategory,
-      text: aiResultInput.getValu
