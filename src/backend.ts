@@ -9,20 +9,20 @@ const DEFAULT_PROMPTS = {
   mes_example: "Format as dialogue history. Focus on capturing the exact speech patterns, tone, and formatting of the character."
 }
 
-// Recursive helper to fetch EVERY character card - in 1.0, userId is resolved automatically from the context!
-async function fetchAllCharacters(): Promise<any[]> {
+// Recursive helper to fetch EVERY character card - explicitly threads userId to prevent operator-scoped errors [2.1.2]
+async function fetchAllCharacters(userId: string): Promise<any[]> {
   const allChars: any[] = []
   let offset = 0
   const limit = 200
   let hasMore = true
 
   while (hasMore) {
-    const chars = await spindle.characters.list({ limit, offset })
+    const chars = await spindle.characters.list({ limit, offset, userId }, userId)
     if (!chars || !chars.data) break
     
     allChars.push(...chars.data)
     
-    // Stop if we received fewer items than the limit, or have retrieved all of them
+    // Stop if we received fewer items than the limit, or have retrieved all of them [2.1.1]
     if (chars.data.length < limit || allChars.length >= (chars.total || 0)) {
       hasMore = false
     } else {
@@ -44,27 +44,27 @@ async function checkAndSendInitData(userId: string, routeType?: string | null, r
   }
 
   try {
-    // 1. Fetch ALL character cards (no longer needs manual userId parameters in 1.0!)
-    const charsData = await fetchAllCharacters()
+    // 1. Fetch ALL character cards using our recursive paginator with explicit userId [2.1.2]
+    const charsData = await fetchAllCharacters(userId)
     const prompts = await spindle.userStorage.getJson('prompts.json', { fallback: DEFAULT_PROMPTS, userId })
     
-    // 2. Smart auto-detect active character based on what you are looking at
+    // 2. Smart auto-detect active character based on what you are looking at [2.1.2, 2.3.1]
     let activeCharId = null
     if (routeType === 'characters' && routeId) {
       activeCharId = routeId // You are on a character card page
     } else if (routeType === 'chat' && routeId && hasChats) {
       try {
-        const chat = await spindle.chats.get(routeId)
+        const chat = await spindle.chats.get(routeId, userId)
         if (chat) activeCharId = chat.character_id // You are in a specific chat
       } catch (err: any) {
         spindle.log.error(`Auto-detect chat error: ${err.message}`)
       }
     }
     
-    // Fallback to active chat if permission is granted
+    // Fallback to active chat if permission is granted [2.3.1, 2.4.1]
     if (!activeCharId && hasChats) {
       try {
-        const activeChat = await spindle.chats.getActive()
+        const activeChat = await spindle.chats.getActive(userId)
         if (activeChat) activeCharId = activeChat.character_id
       } catch (err: any) {
         spindle.log.error(`Auto-detect active chat error: ${err.message}`)
@@ -92,7 +92,7 @@ spindle.onFrontendMessage(async (payload: any, userId: string) => {
   else if (payload.type === 'get_char_text') {
     if (!spindle.permissions.has('characters')) return
     try {
-      const char = await spindle.characters.get(payload.characterId)
+      const char = await spindle.characters.get(payload.characterId, userId)
       if (char) {
         let text = ""
         if (payload.category.startsWith('alt_greeting_')) {
@@ -102,7 +102,7 @@ spindle.onFrontendMessage(async (payload: any, userId: string) => {
           text = char[payload.category as keyof typeof char] || ""
         }
 
-        // Fetch variants stored in the extensions blob!
+        // Fetch variants stored in the extensions blob [2.2.5]
         const extData = char.extensions?.['char_rewriter'] || {}
         const variants = extData.variants?.[payload.category] || []
 
@@ -116,14 +116,14 @@ spindle.onFrontendMessage(async (payload: any, userId: string) => {
   else if (payload.type === 'save_prompts') {
     try {
       await spindle.userStorage.setJson('prompts.json', payload.prompts, { userId })
-      spindle.toast.success("Instructions updated!") // no manual userId needed for toasts in 1.0!
+      spindle.toast.success("Instructions updated!", { userId } as any)
       spindle.sendToFrontend({ type: 'prompts_updated', prompts: payload.prompts }, userId)
     } catch (err: any) {}
   }
 
   else if (payload.type === 'generate') {
     if (!spindle.permissions.has('generation')) {
-      spindle.toast.error("Generation permission required.")
+      spindle.toast.error("Generation permission required.", { userId } as any)
       spindle.sendToFrontend({ type: 'generate_failed' }, userId)
       return
     }
@@ -132,61 +132,95 @@ spindle.onFrontendMessage(async (payload: any, userId: string) => {
       const promptCat = payload.category.startsWith('alt_greeting_') ? 'first_mes' : payload.category
       const sysPrompt = `${prompts.base}\n\nCategory guidance:\n${prompts[promptCat] || ""}`
 
-      spindle.toast.info("AI is rewriting...")
+      spindle.toast.info("AI is rewriting...", { userId } as any)
       
       const result = await spindle.generate.quiet({
         messages: [
           { role: 'system', content: sysPrompt },
           { role: 'user', content: `Original Text:\n${payload.originalText}` }
-        ]
-        // no manual userId inside the generation options needed anymore!
-      }) 
+        ],
+        userId
+      } as any, userId) 
 
       spindle.sendToFrontend({ type: 'generate_result', result: result.content }, userId)
     } catch (err: any) {
-      spindle.toast.error(`Generation failed: ${err.message}`)
+      spindle.toast.error(`Generation failed: ${err.message}`, { userId } as any)
       spindle.sendToFrontend({ type: 'generate_failed' }, userId)
     }
   }
 
-  else if (payload.type === 'apply') {
+  // Save a new draft version to history
+  else if (payload.type === 'save_version') {
+    if (!spindle.permissions.has('characters')) return
+    try {
+      const char = await spindle.characters.get(payload.characterId, userId)
+      if (!char) throw new Error("Character not found")
+
+      const extData = char.extensions?.['char_rewriter'] || { variants: {} }
+      if (!extData.variants) extData.variants = {}
+      if (!extData.variants[payload.category]) extData.variants[payload.category] = []
+      
+      // Prevent saving identical duplicates sequentially
+      const currentList = extData.variants[payload.category]
+      if (currentList[currentList.length - 1] !== payload.text) {
+        extData.variants[payload.category].push(payload.text)
+        await spindle.characters.update(payload.characterId, {
+          extensions: { 'char_rewriter': extData }
+        }, userId)
+        spindle.toast.success("Saved to draft history!", { userId } as any)
+      } else {
+        spindle.toast.info("This exact version is already saved.", { userId } as any)
+      }
+
+      spindle.sendToFrontend({ type: 'save_version_success', variants: extData.variants[payload.category] }, userId)
+    } catch (err: any) {
+      spindle.log.error(`Save version error: ${err.message}`)
+    }
+  }
+
+  // Delete a saved draft from history
+  else if (payload.type === 'delete_version') {
+    if (!spindle.permissions.has('characters')) return
+    try {
+      const char = await spindle.characters.get(payload.characterId, userId)
+      if (!char) throw new Error("Character not found")
+
+      const extData = char.extensions?.['char_rewriter'] || { variants: {} }
+      if (extData.variants?.[payload.category]) {
+        extData.variants[payload.category].splice(payload.index, 1)
+        await spindle.characters.update(payload.characterId, {
+          extensions: { 'char_rewriter': extData }
+        }, userId)
+        spindle.toast.success("Draft version deleted.", { userId } as any)
+      }
+
+      const updatedList = extData.variants?.[payload.category] || []
+      spindle.sendToFrontend({ type: 'save_version_success', variants: updatedList }, userId)
+    } catch (err: any) {
+      spindle.log.error(`Delete version error: ${err.message}`)
+    }
+  }
+
+  // Apply a selected version to overwrite the actual active card field
+  else if (payload.type === 'apply_version') {
     if (!spindle.permissions.has('characters')) return
     try {
       let updatePayload: any = {}
-      const char = await spindle.characters.get(payload.characterId)
+      const char = await spindle.characters.get(payload.characterId, userId)
       if (!char) throw new Error("Character not found")
 
-      // --- SAVE AS VARIANT / ALTERNATE FIELD ---
-      if (payload.saveAsNewVariant) {
-        if (payload.category === 'first_mes' || payload.category.startsWith('alt_greeting_')) {
-          const altGreetings = [...(char.alternate_greetings || [])]
-          altGreetings.push(payload.newText)
-          updatePayload = { alternate_greetings: altGreetings }
-        } else {
-          const extData = char.extensions?.['char_rewriter'] || { variants: {} }
-          if (!extData.variants) extData.variants = {}
-          if (!extData.variants[payload.category]) extData.variants[payload.category] = []
-          
-          extData.variants[payload.category].push(payload.newText)
-          updatePayload = { extensions: { 'char_rewriter': extData } }
-        }
-      } 
-      
-      // --- STANDARD OVERWRITE ---
-      else {
-        if (payload.category.startsWith('alt_greeting_')) {
-          const altGreetings = [...(char.alternate_greetings || [])]
-          const idx = parseInt(payload.category.replace('alt_greeting_', ''), 10)
-          altGreetings[idx] = payload.newText
-          updatePayload = { alternate_greetings: altGreetings }
-        } else {
-          updatePayload = { [payload.category]: payload.newText }
-        }
+      if (payload.category.startsWith('alt_greeting_')) {
+        const altGreetings = [...(char.alternate_greetings || [])]
+        const idx = parseInt(payload.category.replace('alt_greeting_', ''), 10)
+        altGreetings[idx] = payload.text
+        updatePayload = { alternate_greetings: altGreetings }
+      } else {
+        updatePayload = { [payload.category]: payload.text }
       }
 
-      await spindle.characters.update(payload.characterId, updatePayload)
-      spindle.toast.success(payload.saveAsNewVariant ? "Saved as new Variant!" : "Character updated successfully!")
-      spindle.sendToFrontend({ type: 'apply_success', savedAsVariant: payload.saveAsNewVariant }, userId)
+      await spindle.characters.update(payload.characterId, updatePayload, userId)
+      spindle.toast.success("Card updated successfully!", { userId } as any)
+      spindle.sendToFrontend({ type: 'apply_success', text: payload.text }, userId)
     } catch (err: any) {
       spindle.log.error(`Apply error: ${err.message}`)
     }
