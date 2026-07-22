@@ -11,6 +11,8 @@ const DEFAULT_PROMPTS = {
 
 async function getCharacterList(): Promise<any[]> {
   try {
+    // Characters API resolves context automatically.
+    // Keep options object clean ({ limit: 200 }) so Zod validation passes.
     const response = await spindle.characters.list({ limit: 200 })
     if (Array.isArray(response)) return response
     if (response && Array.isArray(response.data)) return response.data
@@ -35,7 +37,9 @@ async function handleInitData(userId: string, routeType?: string | null, routeId
 
   try {
     const chars = await getCharacterList()
-    const prompts = await spindle.userStorage.getJson('prompts.json', { fallback: DEFAULT_PROMPTS })
+    
+    // EXPLICIT userId REQUIRED in options for userStorage in operator mode
+    const prompts = await spindle.userStorage.getJson('prompts.json', { fallback: DEFAULT_PROMPTS, userId })
 
     let activeCharId = null
     if (routeType === 'characters' && routeId) {
@@ -92,23 +96,26 @@ spindle.onFrontendMessage(async (payload: any, userId: string) => {
     }
 
     else if (payload.type === 'save_prompts') {
-      await spindle.userStorage.setJson('prompts.json', payload.prompts)
+      // EXPLICIT userId REQUIRED in options for userStorage
+      await spindle.userStorage.setJson('prompts.json', payload.prompts, { userId })
       spindle.toast.success("Instructions saved!")
       spindle.sendToFrontend({ type: 'prompts_saved', prompts: payload.prompts }, userId)
     }
 
     else if (payload.type === 'generate_rewrite') {
-      const prompts = await spindle.userStorage.getJson('prompts.json', { fallback: DEFAULT_PROMPTS })
+      // EXPLICIT userId REQUIRED in options for userStorage
+      const prompts = await spindle.userStorage.getJson('prompts.json', { fallback: DEFAULT_PROMPTS, userId })
       const catKey = payload.category.startsWith('alt_greeting_') ? 'first_mes' : payload.category
       const categoryGuidance = (prompts as any)[catKey] || ""
       const systemPrompt = `${prompts.base}\n\nCategory Focus:\n${categoryGuidance}`
 
+      // EXPLICIT userId REQUIRED as 2nd argument for generate.quiet in operator mode
       const result = await spindle.generate.quiet({
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: `Original Text to Rewrite:\n${payload.originalText}` }
         ]
-      })
+      }, userId)
 
       const generatedContent = result?.content || result?.text || ""
       spindle.sendToFrontend({ type: 'generate_success', result: generatedContent }, userId)
