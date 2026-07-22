@@ -11,7 +11,6 @@ const DEFAULT_PROMPTS = {
 
 async function getCharacterList(): Promise<any[]> {
   try {
-    // Standard characters.list takes { limit, offset }. Do NOT pass userId inside options.
     const response = await spindle.characters.list({ limit: 200 })
     if (Array.isArray(response)) return response
     if (response && Array.isArray(response.data)) return response.data
@@ -36,9 +35,7 @@ async function handleInitData(userId: string, routeType?: string | null, routeId
 
   try {
     const chars = await getCharacterList()
-    
-    // spindle.storage never throws "userId is required" errors
-    const prompts = await spindle.storage.getJson('prompts.json', { fallback: DEFAULT_PROMPTS })
+    const prompts = await spindle.userStorage.getJson('prompts.json', { fallback: DEFAULT_PROMPTS })
 
     let activeCharId = null
     if (routeType === 'characters' && routeId) {
@@ -95,24 +92,23 @@ spindle.onFrontendMessage(async (payload: any, userId: string) => {
     }
 
     else if (payload.type === 'save_prompts') {
-      await spindle.storage.setJson('prompts.json', payload.prompts)
+      await spindle.userStorage.setJson('prompts.json', payload.prompts)
       spindle.toast.success("Instructions saved!")
       spindle.sendToFrontend({ type: 'prompts_saved', prompts: payload.prompts }, userId)
     }
 
     else if (payload.type === 'generate_rewrite') {
-      const prompts = await spindle.storage.getJson('prompts.json', { fallback: DEFAULT_PROMPTS })
+      const prompts = await spindle.userStorage.getJson('prompts.json', { fallback: DEFAULT_PROMPTS })
       const catKey = payload.category.startsWith('alt_greeting_') ? 'first_mes' : payload.category
       const categoryGuidance = (prompts as any)[catKey] || ""
       const systemPrompt = `${prompts.base}\n\nCategory Focus:\n${categoryGuidance}`
 
-      // spindle.generate.quiet expects input as 1st arg, userId as 2nd arg
       const result = await spindle.generate.quiet({
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: `Original Text to Rewrite:\n${payload.originalText}` }
         ]
-      }, userId)
+      })
 
       const generatedContent = result?.content || result?.text || ""
       spindle.sendToFrontend({ type: 'generate_success', result: generatedContent }, userId)
