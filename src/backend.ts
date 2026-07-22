@@ -1,12 +1,10 @@
 declare const spindle: import('lumiverse-spindle-types').SpindleAPI
 
-// Backend responsibilities are now deliberately minimal: permission status,
-// prompt storage, and AI generation. All character reading/writing moved to
-// the frontend, which talks to Lumiverse's own REST API directly using the
-// browser's session — see frontend.ts. That sidesteps the operator-scoped
-// userId resolution issue entirely, since a same-origin browser fetch() is
-// naturally scoped to whichever user is actually logged in, no extension
-// context resolution involved.
+// Backend now owns all character reading/writing. This fixes the
+// operator-scoped userId resolution issue because the Spindle runtime
+// resolves the correct user from the extension context automatically
+// when spindle.characters.* / spindle.chats.* are called inside an
+// onFrontendMessage handler.
 
 const DEFAULT_PROMPTS = {
   base: "You are an expert creative writer and character designer. Rewrite the following character aspect to be more detailed, engaging, and well-written. Do not add commentary, output only the rewritten text.",
@@ -17,19 +15,23 @@ const DEFAULT_PROMPTS = {
   mes_example: "Format as dialogue history. Focus on capturing the exact speech patterns, tone, and formatting of the character."
 }
 
-// Tracks each user's in-flight generation so a cancel request only ever
-// aborts *that* user's own stream — important on an operator-scoped install
-// where this backend instance is shared across everyone using the extension.
 const activeGenerations = new Map<string, AbortController>()
 
 spindle.onFrontendMessage(async (payload: any, userId: string) => {
+  const sendError = (error: string) => {
+    spindle.sendToFrontend({ type: 'error', error }, userId)
+  }
+
+  // ------------------------------------------------------------------
+  // STATUS
+  // ------------------------------------------------------------------
   if (payload.type === 'get_status') {
-    // Everything wrapped in try/catch — always answer, never leave the
-    // frontend hanging on a "Loading..." placeholder with no response.
     try {
       const hasGeneration = spindle.permissions.has('generation')
+      const hasCharacters = spindle.permissions.has('characters')
+      const hasChats      = spindle.permissions.has('chats')
       const prompts = await spindle.userStorage.getJson('prompts.json', { fallback: DEFAULT_PROMPTS, userId })
-      spindle.sendToFrontend({ type: 'status_result', hasGeneration, prompts }, userId)
+      spindle.sendToFrontend({ type: 'status_result', hasGeneration, hasCharacters, hasChats, prompts }, userId)
     } catch (err: any) {
       spindle.log.error(`Status error: ${err?.message || err}`)
       try {
@@ -40,6 +42,9 @@ spindle.onFrontendMessage(async (payload: any, userId: string) => {
     }
   }
 
+  // ------------------------------------------------------------------
+  // PROMPTS
+  // ------------------------------------------------------------------
   else if (payload.type === 'save_prompts') {
     try {
       await spindle.userStorage.setJson('prompts.json', payload.prompts, { userId })
@@ -51,6 +56,166 @@ spindle.onFrontendMessage(async (payload: any, userId: string) => {
     }
   }
 
+  // ------------------------------------------------------------------
+  // CHARACTERS  (paginated list)
+  // ------------------------------------------------------------------
+  else if (payload.type === 'get_characters') {
+    if (!spindle.permissions.has('characters')) {
+      sendError('Characters permission is required.')
+      spindle.sendToFrontend({ type: 'characters_result', characters: [] }, userId)
+      return
+    }
+    try {
+      const allChars: any[] = []
+      let offset = 0
+      const limit = 200
+      while (true) {
+        const { data, total } = await spindle.characters.list({ limit, offset })
+        allChars.push(...data)
+        if (data.length < limit || allChars.length >= total) break
+        offset += limit
+      }
+      spindle.sendToFrontend({ type: 'characters_result', characters: allChars }, userId)
+    } catch (err: any) {
+      spindle.log.error(`Get characters error: ${err?.message || err}`)
+      sendError(`Failed to load characters: ${err?.message || err}`)
+      spindle.sendToFrontend({ type: 'characters_result', characters: [] }, userId)
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // RESOLVE ACTIVE CHARACTER  (from route or active chat)
+  // ------------------------------------------------------------------
+  else if (payload.type === 'resolve_active_char') {
+    try {
+      let charId: string | null = null
+
+      if (payload.routeType === 'characters' && payload.routeId) {
+        charId = payload.routeId
+      } else if (payload.routeType === 'chat' && payload.routeId && spindle.permissions.has('chats')) {
+        const chat = await spindle.chats.get(payload.routeId)
+        charId = chat?.character_id || null
+      }
+
+      if (!charId && spindle.permissions.has('chats')) {
+        const activeChat = await spindle.chats.getActive()
+        charId = activeChat?.character_id || null
+      }
+
+      spindle.sendToFrontend({ type: 'active_char_resolved', characterId: charId }, userId)
+    } catch (err: any) {
+      spindle.log.error(`Resolve active char error: ${err?.message || err}`)
+      spindle.sendToFrontend({ type: 'active_char_resolved', characterId: null }, userId)
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // SAVE VERSION  (extensions shallow-merge)
+  // ------------------------------------------------------------------
+  else if (payload.type === 'save_version') {
+    if (!spindle.permissions.has('characters')) {
+      sendError('Characters permission is required to save versions.')
+      return
+    }
+    try {
+      const char = await spindle.characters.get(payload.characterId)
+      if (!char) { sendError('Character not found'); return }
+
+      const extData = char.extensions?.['char_rewriter'] || { variants: {} }
+      if (!extData.variants) extData.variants = {}
+      if (!extData.variants[payload.category]) extData.variants[payload.category] = []
+
+      const list = extData.variants[payload.category]
+      if (list.length === 0 || list[list.length - 1] !== payload.text) {
+        list.push(payload.text)
+        await spindle.characters.update(payload.characterId, {
+          extensions: { char_rewriter: extData }
+        })
+      }
+
+      spindle.sendToFrontend({
+        type: 'version_saved',
+        characterId: payload.characterId,
+        category: payload.category,
+        variants: list
+      }, userId)
+    } catch (err: any) {
+      spindle.log.error(`Save version error: ${err?.message || err}`)
+      sendError(`Failed to save version: ${err?.message || err}`)
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // DELETE VERSION
+  // ------------------------------------------------------------------
+  else if (payload.type === 'delete_version') {
+    if (!spindle.permissions.has('characters')) {
+      sendError('Characters permission is required to delete versions.')
+      return
+    }
+    try {
+      const char = await spindle.characters.get(payload.characterId)
+      if (!char) { sendError('Character not found'); return }
+
+      const extData = char.extensions?.['char_rewriter'] || { variants: {} }
+      if (extData.variants?.[payload.category]) {
+        extData.variants[payload.category].splice(payload.index, 1)
+        await spindle.characters.update(payload.characterId, {
+          extensions: { char_rewriter: extData }
+        })
+      }
+
+      spindle.sendToFrontend({
+        type: 'version_deleted',
+        characterId: payload.characterId,
+        category: payload.category,
+        variants: extData.variants?.[payload.category] || []
+      }, userId)
+    } catch (err: any) {
+      spindle.log.error(`Delete version error: ${err?.message || err}`)
+      sendError(`Failed to delete version: ${err?.message || err}`)
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // APPLY VERSION  (write to actual card fields)
+  // ------------------------------------------------------------------
+  else if (payload.type === 'apply_version') {
+    if (!spindle.permissions.has('characters')) {
+      sendError('Characters permission is required to apply versions.')
+      return
+    }
+    try {
+      let updatePayload: any = {}
+
+      if (payload.category.startsWith('alt_greeting_')) {
+        const char = await spindle.characters.get(payload.characterId)
+        if (!char) { sendError('Character not found'); return }
+
+        const altGreetings = [...(char.alternate_greetings || [])]
+        const idx = parseInt(payload.category.replace('alt_greeting_', ''), 10)
+        altGreetings[idx] = payload.text
+        updatePayload = { alternate_greetings: altGreetings }
+      } else {
+        updatePayload = { [payload.category]: payload.text }
+      }
+
+      await spindle.characters.update(payload.characterId, updatePayload)
+
+      spindle.sendToFrontend({
+        type: 'version_applied',
+        characterId: payload.characterId,
+        category: payload.category
+      }, userId)
+    } catch (err: any) {
+      spindle.log.error(`Apply version error: ${err?.message || err}`)
+      sendError(`Failed to apply version: ${err?.message || err}`)
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // GENERATION  (unchanged logic, scoped to userId)
+  // ------------------------------------------------------------------
   else if (payload.type === 'generate') {
     if (!spindle.permissions.has('generation')) {
       spindle.toast.error("Generation permission required.")
@@ -66,11 +231,6 @@ spindle.onFrontendMessage(async (payload: any, userId: string) => {
       const promptCat = payload.category.startsWith('alt_greeting_') ? 'first_mes' : payload.category
       const sysPrompt = `${prompts.base}\n\nCategory guidance:\n${prompts[promptCat] || ""}`
 
-      // Same defensive treatment as characters.*/chats.* and the old
-      // generate.quiet() call needed: docs don't list userId as a
-      // quietStream() param, but this install has repeatedly needed it
-      // passed explicitly for operator-scoped calls the docs claim resolve
-      // automatically. Harmless extra property if it's not actually used.
       for await (const chunk of (spindle.generate.quietStream as any)({
         messages: [
           { role: 'system', content: sysPrompt },
@@ -100,7 +260,5 @@ spindle.onFrontendMessage(async (payload: any, userId: string) => {
   else if (payload.type === 'generate_cancel') {
     const controller = activeGenerations.get(userId)
     if (controller) controller.abort()
-    // No response needed here — the generate loop above's catch block
-    // sends 'generate_cancelled' once the abort actually lands.
   }
 })
