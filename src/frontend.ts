@@ -101,6 +101,9 @@ export function setup(ctx: SpindleFrontendContext) {
   let categoryVariants: string[] = []
   let selectedVersionKey = 'live'
 
+  let currentTextValue = ''
+  let resultTextValue = ''
+
   const activeMounts: any[] = []
   const WATCHDOG_MS = 15000
   let statusRequestSeq = 0
@@ -187,11 +190,11 @@ export function setup(ctx: SpindleFrontendContext) {
     onChange: (v) => {
       selectedVersionKey = v
       if (v === 'live') {
-        currentTextInput.update({ value: originalTextRaw })
+        updateCurrentText(originalTextRaw)
         deleteVersionBtn.style.display = 'none'
       } else {
         const idx = parseInt(v, 10)
-        currentTextInput.update({ value: categoryVariants[idx] || '' })
+        updateCurrentText(categoryVariants[idx] || '')
         deleteVersionBtn.style.display = 'block'
       }
     }
@@ -201,9 +204,20 @@ export function setup(ctx: SpindleFrontendContext) {
   const currentTextSlot = document.createElement('div')
   container.appendChild(currentTextSlot)
   const currentTextInput = ctx.components.mountTextArea(currentTextSlot, {
-    value: '', rows: 5, placeholder: 'Select a character card above...'
+    value: '', rows: 5, placeholder: 'Select a character card above...',
+    onChange: (v) => { currentTextValue = v }
   })
   activeMounts.push(currentTextInput)
+
+  function updateCurrentText(val: string) {
+    currentTextValue = val
+    currentTextInput.update({ value: val })
+  }
+
+  function updateResultText(val: string) {
+    resultTextValue = val
+    resultInput.update({ value: val })
+  }
 
   const currentActionsRow = document.createElement('div')
   currentActionsRow.style.cssText = 'display:flex;gap:8px;margin-top:-8px;'
@@ -213,14 +227,14 @@ export function setup(ctx: SpindleFrontendContext) {
   saveCurrentBtn.textContent = 'Save Current as Version'
   saveCurrentBtn.className = 'btn'
   saveCurrentBtn.style.flex = '1'
-  saveCurrentBtn.onclick = () => saveVersion(currentTextInput.getValue())
+  saveCurrentBtn.onclick = () => saveVersion(currentTextValue)
   currentActionsRow.appendChild(saveCurrentBtn)
 
   const applyBtn = document.createElement('button')
   applyBtn.textContent = 'Apply Selected to Card'
   applyBtn.className = 'btn'
   applyBtn.style.cssText = 'background: var(--lumiverse-success); color: white; flex: 1;'
-  applyBtn.onclick = () => applyVersion(currentTextInput.getValue())
+  applyBtn.onclick = () => applyVersion(currentTextValue)
   currentActionsRow.appendChild(applyBtn)
 
   const deleteVersionBtn = document.createElement('button')
@@ -256,11 +270,11 @@ export function setup(ctx: SpindleFrontendContext) {
 
     isGenerating = true
     streamedText = ''
-    resultInput.update({ value: '' })
+    updateResultText('')
     saveResultBtn.style.display = 'none'
     generateBtn.textContent = 'Stop Generating'
     ctx.sendToBackend({
-      type: 'generate', characterId: selectedChar, category: selectedCategory, originalText: currentTextInput.getValue()
+      type: 'generate', characterId: selectedChar, category: selectedCategory, originalText: currentTextValue
     })
   }
   container.appendChild(generateBtn)
@@ -269,6 +283,7 @@ export function setup(ctx: SpindleFrontendContext) {
   container.appendChild(resultSlot)
   const resultInput = ctx.components.mountTextArea(resultSlot, {
     value: '', rows: 5, placeholder: 'AI suggestion will appear here...',
+    onChange: (v) => { resultTextValue = v }
   })
   activeMounts.push(resultInput)
 
@@ -276,13 +291,13 @@ export function setup(ctx: SpindleFrontendContext) {
   saveResultBtn.textContent = 'Save AI Result as Version'
   saveResultBtn.className = 'btn'
   saveResultBtn.style.cssText = 'display: none;'
-  saveResultBtn.onclick = () => saveVersion(resultInput.getValue())
+  saveResultBtn.onclick = () => saveVersion(resultTextValue)
   container.appendChild(saveResultBtn)
 
   function loadCurrentText() {
     const char = fullCharList.find(c => c.id === selectedChar)
     if (!char) {
-      currentTextInput.update({ value: 'Select a character card above...' })
+      updateCurrentText('Select a character card above...')
       variantSelectSlot.style.display = 'none'
       deleteVersionBtn.style.display = 'none'
       return
@@ -301,8 +316,8 @@ export function setup(ctx: SpindleFrontendContext) {
     originalTextRaw = text
     selectedVersionKey = 'live'
 
-    currentTextInput.update({ value: originalTextRaw })
-    resultInput.update({ value: '' })
+    updateCurrentText(originalTextRaw)
+    updateResultText('')
     saveResultBtn.style.display = 'none'
 
     renderVariantsDropdown()
@@ -358,6 +373,11 @@ export function setup(ctx: SpindleFrontendContext) {
   const unsubPermissions = ctx.events.on('PERMISSION_CHANGED', () => { loadEverything() })
 
   ctx.onBackendMessage((payload: any) => {
+    if (payload.type === 'error') {
+      alert(`Error: ${payload.error}`)
+      return
+    }
+
     if (payload.type === 'status_result') {
       statusRequestSeq++
       hasGeneration = payload.hasGeneration
@@ -398,10 +418,8 @@ export function setup(ctx: SpindleFrontendContext) {
         if (payload.category === selectedCategory) {
           categoryVariants = payload.variants || []
           selectedVersionKey = categoryVariants.length > 0 ? (categoryVariants.length - 1).toString() : 'live'
-          currentTextInput.update({
-            value: categoryVariants.length > 0 ? categoryVariants[categoryVariants.length - 1] : originalTextRaw
-          })
-          resultInput.update({ value: '' })
+          updateCurrentText(categoryVariants.length > 0 ? categoryVariants[categoryVariants.length - 1] : originalTextRaw)
+          updateResultText('')
           saveResultBtn.style.display = 'none'
           renderVariantsDropdown()
         }
@@ -419,7 +437,7 @@ export function setup(ctx: SpindleFrontendContext) {
         if (payload.category === selectedCategory) {
           categoryVariants = payload.variants || []
           selectedVersionKey = 'live'
-          currentTextInput.update({ value: originalTextRaw })
+          updateCurrentText(originalTextRaw)
           renderVariantsDropdown()
         }
       }
@@ -428,7 +446,7 @@ export function setup(ctx: SpindleFrontendContext) {
 
     if (payload.type === 'version_applied') {
       if (payload.characterId === selectedChar) {
-        const appliedText = payload.text ?? currentTextInput.getValue()
+        const appliedText = payload.text ?? currentTextValue
         const cached = fullCharList.find(c => c.id === selectedChar)
 
         if (cached) {
@@ -445,7 +463,7 @@ export function setup(ctx: SpindleFrontendContext) {
           originalTextRaw = appliedText
           selectedVersionKey = 'live'
           renderVariantsDropdown()
-          currentTextInput.update({ value: originalTextRaw })
+          updateCurrentText(originalTextRaw)
         }
       }
       return
@@ -453,14 +471,14 @@ export function setup(ctx: SpindleFrontendContext) {
 
     if (payload.type === 'generate_token') {
       streamedText += payload.token
-      resultInput.update({ value: streamedText })
+      updateResultText(streamedText)
     }
 
     if (payload.type === 'generate_done') {
       isGenerating = false
       generateBtn.textContent = 'Rewrite with AI'
       generateBtn.disabled = false
-      resultInput.update({ value: payload.result })
+      updateResultText(payload.result)
       saveResultBtn.style.display = 'block'
     }
 
@@ -510,25 +528,3 @@ export function setup(ctx: SpindleFrontendContext) {
 
       charSelect.update({
         value: selectedChar, placeholder: "Select Character", searchPlaceholder: "Search...",
-        options: chars.map((c: any) => ({
-          value: c.id, label: c.name, leading: c.image_id ? { type: 'image', src: `/api/v1/images/${c.image_id}?size=sm` } : undefined
-        }))
-      })
-
-      updateCategoryOptions()
-      if (selectedChar) loadCurrentText()
-    } catch (err: any) {
-      charSelect.update({ placeholder: "Error loading characters", options: [] })
-      currentTextInput.update({ value: `Couldn't load characters: ${err?.message || err}` })
-    }
-  }
-
-  loadEverything()
-
-  return () => {
-    tab.destroy()
-    unsubPermissions()
-    unsubTabActivate()
-    activeMounts.forEach(m => m?.destroy?.())
-  }
-}
