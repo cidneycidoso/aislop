@@ -110,12 +110,12 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
       if (payload.routeType === 'characters' && typeof payload.routeId === 'string' && payload.routeId) {
         charId = payload.routeId
       } else if (payload.routeType === 'chat' && typeof payload.routeId === 'string' && payload.routeId && spindle.permissions.has('chats')) {
-        const chat = await spindle.chats.get(payload.routeId) // Removed illegal getOpts param
+        const chat = await spindle.chats.get(payload.routeId, getOpts(userId))
         charId = chat?.character_id || null
       }
 
       if (!charId && spindle.permissions.has('chats')) {
-        const activeChat = await spindle.chats.getActive() // Removed illegal getOpts param
+        const activeChat = await spindle.chats.getActive(getOpts(userId))
         charId = activeChat?.character_id || null
       }
 
@@ -144,11 +144,19 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
     }
 
     try {
-      const char = await spindle.characters.get(payload.characterId) // Removed illegal getOpts param
+      const char = await spindle.characters.get(payload.characterId, getOpts(userId))
       if (!char) { sendError('Character not found'); return }
 
       const text = typeof payload.text === 'string' ? payload.text : String(payload.text ?? '')
-      const existingRewriter = char.extensions?.['char_rewriter']
+      
+      let rawExtensions: Record<string, any> = {}
+      if (typeof char.extensions === 'string') {
+        try { rawExtensions = JSON.parse(char.extensions) } catch { rawExtensions = {} }
+      } else if (typeof char.extensions === 'object' && char.extensions !== null) {
+        rawExtensions = char.extensions
+      }
+
+      const existingRewriter = rawExtensions['char_rewriter']
       const variants: Record<string, string[]> = {}
 
       if (existingRewriter?.variants && typeof existingRewriter.variants === 'object') {
@@ -164,11 +172,11 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
         variants[payload.category].push(text)
       }
 
-      const extensions = sanitize(char.extensions || {})
-      extensions['char_rewriter'] = sanitize({ variants })
+      const extensionsObj = sanitize({ ...rawExtensions, char_rewriter: { variants } })
+      // Must be serialized to string so SQLite database accepts it as a JSON payload
+      const extensionsStr = JSON.stringify(extensionsObj)
 
-      const updatePayload = sanitize({ extensions })
-      await spindle.characters.update(payload.characterId, updatePayload) // Removed illegal getOpts param
+      await spindle.characters.update(payload.characterId, { extensions: extensionsStr }, getOpts(userId))
 
       spindle.sendToFrontend({
         type: 'version_saved',
@@ -200,19 +208,26 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
     }
 
     try {
-      const char = await spindle.characters.get(payload.characterId)
+      const char = await spindle.characters.get(payload.characterId, getOpts(userId))
       if (!char) { sendError('Character not found'); return }
 
-      const extensions = sanitize(char.extensions || {})
-      const rewriter = extensions['char_rewriter'] || { variants: {} }
+      let rawExtensions: Record<string, any> = {}
+      if (typeof char.extensions === 'string') {
+        try { rawExtensions = JSON.parse(char.extensions) } catch { rawExtensions = {} }
+      } else if (typeof char.extensions === 'object' && char.extensions !== null) {
+        rawExtensions = char.extensions
+      }
+
+      const rewriter = rawExtensions['char_rewriter'] || { variants: {} }
       if (!rewriter.variants) rewriter.variants = {}
 
       if (Array.isArray(rewriter.variants[payload.category])) {
         rewriter.variants[payload.category].splice(payload.index, 1)
-        extensions['char_rewriter'] = sanitize(rewriter)
+        rawExtensions['char_rewriter'] = rewriter
 
-        const updatePayload = sanitize({ extensions })
-        await spindle.characters.update(payload.characterId, updatePayload)
+        // Must be serialized to string so SQLite database accepts it as a JSON payload
+        const extensionsStr = JSON.stringify(rawExtensions)
+        await spindle.characters.update(payload.characterId, { extensions: extensionsStr }, getOpts(userId))
       }
 
       spindle.sendToFrontend({
@@ -249,7 +264,7 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
       let updatePayload: any = {}
 
       if (payload.category.startsWith('alt_greeting_')) {
-        const char = await spindle.characters.get(payload.characterId)
+        const char = await spindle.characters.get(payload.characterId, getOpts(userId))
         if (!char) { sendError('Character not found'); return }
 
         const altGreetings = toStringArray(char.alternate_greetings)
@@ -259,13 +274,14 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
           altGreetings.push('')
         }
         altGreetings[idx] = text
-        updatePayload = { alternate_greetings: altGreetings }
+        
+        // JSON array must be stringified for SQLite
+        updatePayload = { alternate_greetings: JSON.stringify(altGreetings) }
       } else {
         updatePayload = { [payload.category]: text }
       }
 
-      const finalPayload = sanitize(updatePayload)
-      await spindle.characters.update(payload.characterId, finalPayload)
+      await spindle.characters.update(payload.characterId, updatePayload, getOpts(userId))
 
       spindle.sendToFrontend({
         type: 'version_applied',
