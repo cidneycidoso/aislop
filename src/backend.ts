@@ -11,9 +11,21 @@ const DEFAULT_PROMPTS = {
 
 const activeGenerations = new Map<string, AbortController>()
 
-/** Strips `undefined` (which the Rust binding rejects) by round-tripping through JSON. */
+/** Deep-clone and strip any `undefined` values (serde_v8 rejects them).
+ *  `undefined` in objects → key is dropped.
+ *  `undefined` in arrays → converted to `null` (use toStringArray() for string arrays). */
 function sanitize<T>(obj: T): T {
-  return JSON.parse(JSON.stringify(obj ?? {}))
+  try {
+    return JSON.parse(JSON.stringify(obj ?? {}))
+  } catch {
+    return {} as T
+  }
+}
+
+/** Ensure a value is a dense string array with no nulls/undefineds. */
+function toStringArray(arr: unknown): string[] {
+  if (!Array.isArray(arr)) return []
+  return arr.map((v) => (typeof v === 'string' ? v : ''))
 }
 
 spindle.onFrontendMessage(async (payload: any, userId: string) => {
@@ -56,7 +68,7 @@ spindle.onFrontendMessage(async (payload: any, userId: string) => {
   }
 
   // ------------------------------------------------------------------
-  // CHARACTERS  (paginated list)
+  // CHARACTERS
   // ------------------------------------------------------------------
   else if (payload.type === 'get_characters') {
     if (!spindle.permissions.has('characters')) {
@@ -120,30 +132,34 @@ spindle.onFrontendMessage(async (payload: any, userId: string) => {
       const char = await spindle.characters.get(payload.characterId, { userId })
       if (!char) { sendError('Character not found'); return }
 
-      // Build a clean variants map — only real arrays, no undefined values
+      // Defensive: frontend textareas can return undefined instead of ''
+      const text = typeof payload.text === 'string' ? payload.text : String(payload.text ?? '')
+
+      // Build clean variants map from existing data
       const existingRewriter = char.extensions?.['char_rewriter']
       const variants: Record<string, string[]> = {}
 
       if (existingRewriter?.variants && typeof existingRewriter.variants === 'object') {
         for (const [key, val] of Object.entries(existingRewriter.variants)) {
           if (Array.isArray(val)) {
-            variants[key] = val.filter((v): v is string => typeof v === 'string')
+            variants[key] = toStringArray(val)
           }
         }
       }
 
       if (!variants[payload.category]) variants[payload.category] = []
-      if (variants[payload.category].length === 0 || variants[payload.category][variants[payload.category].length - 1] !== payload.text) {
-        variants[payload.category].push(payload.text)
+      if (variants[payload.category].length === 0 || variants[payload.category][variants[payload.category].length - 1] !== text) {
+        variants[payload.category].push(text)
       }
 
-      // Sanitize the full extensions object so no undefined survives
-      const cleanExtensions = sanitize(char.extensions)
-      cleanExtensions['char_rewriter'] = { variants }
+      // Build full extensions object, preserving other extension keys
+      const extensions = sanitize(char.extensions || {})
+      extensions['char_rewriter'] = sanitize({ variants })
 
-      await spindle.characters.update(payload.characterId, {
-        extensions: cleanExtensions
-      }, { userId })
+      const updatePayload = sanitize({ extensions })
+      spindle.log.info(`[save_version] updatePayload: ${JSON.stringify(updatePayload)}`)
+
+      await spindle.characters.update(payload.characterId, updatePayload, { userId })
 
       spindle.sendToFrontend({
         type: 'version_saved',
@@ -169,17 +185,18 @@ spindle.onFrontendMessage(async (payload: any, userId: string) => {
       const char = await spindle.characters.get(payload.characterId, { userId })
       if (!char) { sendError('Character not found'); return }
 
-      const cleanExtensions = sanitize(char.extensions)
-      const rewriter = cleanExtensions['char_rewriter'] || { variants: {} }
+      const extensions = sanitize(char.extensions || {})
+      const rewriter = extensions['char_rewriter'] || { variants: {} }
       if (!rewriter.variants) rewriter.variants = {}
 
       if (Array.isArray(rewriter.variants[payload.category])) {
         rewriter.variants[payload.category].splice(payload.index, 1)
-        cleanExtensions['char_rewriter'] = rewriter
+        extensions['char_rewriter'] = sanitize(rewriter)
 
-        await spindle.characters.update(payload.characterId, {
-          extensions: cleanExtensions
-        }, { userId })
+        const updatePayload = sanitize({ extensions })
+        spindle.log.info(`[delete_version] updatePayload: ${JSON.stringify(updatePayload)}`)
+
+        await spindle.characters.update(payload.characterId, updatePayload, { userId })
       }
 
       spindle.sendToFrontend({
@@ -203,27 +220,29 @@ spindle.onFrontendMessage(async (payload: any, userId: string) => {
       return
     }
     try {
+      const text = typeof payload.text === 'string' ? payload.text : String(payload.text ?? '')
       let updatePayload: any = {}
 
       if (payload.category.startsWith('alt_greeting_')) {
         const char = await spindle.characters.get(payload.characterId, { userId })
         if (!char) { sendError('Character not found'); return }
 
-        // Ensure a dense string array — no undefined holes, no nulls
-        const altGreetings: string[] = (char.alternate_greetings || [])
-          .map((g: any) => (typeof g === 'string' ? g : ''))
-
+        const altGreetings = toStringArray(char.alternate_greetings)
         const idx = parseInt(payload.category.replace('alt_greeting_', ''), 10)
+
         while (altGreetings.length < idx) {
           altGreetings.push('')
         }
-        altGreetings[idx] = payload.text
+        altGreetings[idx] = text
         updatePayload = { alternate_greetings: altGreetings }
       } else {
-        updatePayload = { [payload.category]: payload.text }
+        updatePayload = { [payload.category]: text }
       }
 
-      await spindle.characters.update(payload.characterId, updatePayload, { userId })
+      const finalPayload = sanitize(updatePayload)
+      spindle.log.info(`[apply_version] finalPayload: ${JSON.stringify(finalPayload)}`)
+
+      await spindle.characters.update(payload.characterId, finalPayload, { userId })
 
       spindle.sendToFrontend({
         type: 'version_applied',
