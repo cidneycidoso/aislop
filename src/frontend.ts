@@ -72,8 +72,6 @@ async function resolveActiveCharId(routeType: string | null, routeId: string | n
 }
 
 export function setup(ctx: SpindleFrontendContext) {
-  let isInitialized = false
-
   const tab = ctx.ui.registerDrawerTab({
     id: 'ai-rewriter',
     title: 'AI Character Rewriter',
@@ -82,7 +80,7 @@ export function setup(ctx: SpindleFrontendContext) {
   })
 
   const unsubTabActivate = tab.onActivate(() => {
-    if (isInitialized) loadEverything()
+    loadEverything()
   })
 
   const permissionWarning = document.createElement('div')
@@ -103,8 +101,8 @@ export function setup(ctx: SpindleFrontendContext) {
   let categoryVariants: string[] = []
   let selectedVersionKey = 'live'
 
-  let currentTextValue = ''
-  let resultTextValue = ''
+  let currentTextVal = ''
+  let resultTextVal = ''
 
   const activeMounts: any[] = []
   const WATCHDOG_MS = 15000
@@ -116,7 +114,6 @@ export function setup(ctx: SpindleFrontendContext) {
   const charSelect = ctx.components.mountSelect(charSlot, {
     value: '', placeholder: "Loading characters...", options: [{ value: '', label: 'Loading characters...' }],
     onChange: (v) => {
-      if (!isInitialized) return
       selectedChar = v
       updateCategoryOptions()
       loadCurrentText()
@@ -136,13 +133,29 @@ export function setup(ctx: SpindleFrontendContext) {
       { value: 'scenario', label: 'Scenario' },
       { value: 'first_mes', label: 'First Message' }
     ],
-    onChange: (v) => {
-      if (!isInitialized) return
-      selectedCategory = v
-      loadCurrentText()
-    }
+    onChange: (v) => { selectedCategory = v; loadCurrentText() }
   })
   activeMounts.push(catSelect)
+
+  function updateCategoryOptions() {
+    const char = fullCharList.find(c => c.id === selectedChar)
+    const options = [
+      { value: 'description', label: 'Description' },
+      { value: 'personality', label: 'Personality' },
+      { value: 'scenario', label: 'Scenario' },
+      { value: 'mes_example', label: 'Example Messages' },
+      { value: 'first_mes', label: 'Main Greeting' }
+    ]
+
+    if (char && char.alternate_greetings && char.alternate_greetings.length > 0) {
+      char.alternate_greetings.forEach((_: any, idx: number) => {
+        options.push({ value: `alt_greeting_${idx}`, label: `Alt Greeting ${idx + 1}` })
+      })
+    }
+
+    if (!options.find(o => o.value === selectedCategory)) selectedCategory = 'description'
+    catSelect.update({ options, value: selectedCategory })
+  }
 
   // 3. PROMPTS
   const promptSlot = document.createElement('div')
@@ -175,14 +188,15 @@ export function setup(ctx: SpindleFrontendContext) {
   const variantSelect = ctx.components.mountSelect(variantSelectSlot, {
     value: 'live', placeholder: "Select Draft Version", options: [{ value: 'live', label: 'Live Card Text' }],
     onChange: (v) => {
-      if (!isInitialized) return
       selectedVersionKey = v
       if (v === 'live') {
-        updateCurrentText(originalTextRaw)
+        currentTextVal = originalTextRaw
+        currentTextInput.update({ value: currentTextVal })
         deleteVersionBtn.style.display = 'none'
       } else {
         const idx = parseInt(v, 10)
-        updateCurrentText(categoryVariants[idx] || '')
+        currentTextVal = categoryVariants[idx] || ''
+        currentTextInput.update({ value: currentTextVal })
         deleteVersionBtn.style.display = 'block'
       }
     }
@@ -193,7 +207,7 @@ export function setup(ctx: SpindleFrontendContext) {
   container.appendChild(currentTextSlot)
   const currentTextInput = ctx.components.mountTextArea(currentTextSlot, {
     value: '', rows: 5, placeholder: 'Select a character card above...',
-    onChange: (v) => { currentTextValue = v }
+    onChange: (v) => { currentTextVal = v }
   })
   activeMounts.push(currentTextInput)
 
@@ -205,14 +219,14 @@ export function setup(ctx: SpindleFrontendContext) {
   saveCurrentBtn.textContent = 'Save Current as Version'
   saveCurrentBtn.className = 'btn'
   saveCurrentBtn.style.flex = '1'
-  saveCurrentBtn.onclick = () => saveVersion(currentTextValue)
+  saveCurrentBtn.onclick = () => saveVersion(currentTextVal)
   currentActionsRow.appendChild(saveCurrentBtn)
 
   const applyBtn = document.createElement('button')
   applyBtn.textContent = 'Apply Selected to Card'
   applyBtn.className = 'btn'
   applyBtn.style.cssText = 'background: var(--lumiverse-success); color: white; flex: 1;'
-  applyBtn.onclick = () => applyVersion(currentTextValue)
+  applyBtn.onclick = () => applyVersion(currentTextVal)
   currentActionsRow.appendChild(applyBtn)
 
   const deleteVersionBtn = document.createElement('button')
@@ -248,11 +262,12 @@ export function setup(ctx: SpindleFrontendContext) {
 
     isGenerating = true
     streamedText = ''
-    updateResultText('')
+    resultTextVal = ''
+    resultInput.update({ value: '' })
     saveResultBtn.style.display = 'none'
     generateBtn.textContent = 'Stop Generating'
     ctx.sendToBackend({
-      type: 'generate', characterId: selectedChar, category: selectedCategory, originalText: currentTextValue
+      type: 'generate', characterId: selectedChar, category: selectedCategory, originalText: currentTextVal
     })
   }
   container.appendChild(generateBtn)
@@ -261,7 +276,7 @@ export function setup(ctx: SpindleFrontendContext) {
   container.appendChild(resultSlot)
   const resultInput = ctx.components.mountTextArea(resultSlot, {
     value: '', rows: 5, placeholder: 'AI suggestion will appear here...',
-    onChange: (v) => { resultTextValue = v }
+    onChange: (v) => { resultTextVal = v }
   })
   activeMounts.push(resultInput)
 
@@ -269,44 +284,14 @@ export function setup(ctx: SpindleFrontendContext) {
   saveResultBtn.textContent = 'Save AI Result as Version'
   saveResultBtn.className = 'btn'
   saveResultBtn.style.cssText = 'display: none;'
-  saveResultBtn.onclick = () => saveVersion(resultTextValue)
+  saveResultBtn.onclick = () => saveVersion(resultTextVal)
   container.appendChild(saveResultBtn)
-
-  // UTILITY HELPERS
-  function updateCurrentText(val: string) {
-    currentTextValue = val
-    currentTextInput.update({ value: val })
-  }
-
-  function updateResultText(val: string) {
-    resultTextValue = val
-    resultInput.update({ value: val })
-  }
-
-  function updateCategoryOptions() {
-    const char = fullCharList.find(c => c.id === selectedChar)
-    const options = [
-      { value: 'description', label: 'Description' },
-      { value: 'personality', label: 'Personality' },
-      { value: 'scenario', label: 'Scenario' },
-      { value: 'mes_example', label: 'Example Messages' },
-      { value: 'first_mes', label: 'Main Greeting' }
-    ]
-
-    if (char && char.alternate_greetings && char.alternate_greetings.length > 0) {
-      char.alternate_greetings.forEach((_: any, idx: number) => {
-        options.push({ value: `alt_greeting_${idx}`, label: `Alt Greeting ${idx + 1}` })
-      })
-    }
-
-    if (!options.find(o => o.value === selectedCategory)) selectedCategory = 'description'
-    catSelect.update({ options, value: selectedCategory })
-  }
 
   function loadCurrentText() {
     const char = fullCharList.find(c => c.id === selectedChar)
     if (!char) {
-      updateCurrentText('Select a character card above...')
+      currentTextVal = 'Select a character card above...'
+      currentTextInput.update({ value: currentTextVal })
       variantSelectSlot.style.display = 'none'
       deleteVersionBtn.style.display = 'none'
       return
@@ -325,8 +310,10 @@ export function setup(ctx: SpindleFrontendContext) {
     originalTextRaw = text
     selectedVersionKey = 'live'
 
-    updateCurrentText(originalTextRaw)
-    updateResultText('')
+    currentTextVal = originalTextRaw
+    currentTextInput.update({ value: currentTextVal })
+    resultTextVal = ''
+    resultInput.update({ value: '' })
     saveResultBtn.style.display = 'none'
 
     renderVariantsDropdown()
@@ -427,8 +414,10 @@ export function setup(ctx: SpindleFrontendContext) {
         if (payload.category === selectedCategory) {
           categoryVariants = payload.variants || []
           selectedVersionKey = categoryVariants.length > 0 ? (categoryVariants.length - 1).toString() : 'live'
-          updateCurrentText(categoryVariants.length > 0 ? categoryVariants[categoryVariants.length - 1] : originalTextRaw)
-          updateResultText('')
+          currentTextVal = categoryVariants.length > 0 ? categoryVariants[categoryVariants.length - 1] : originalTextRaw
+          currentTextInput.update({ value: currentTextVal })
+          resultTextVal = ''
+          resultInput.update({ value: '' })
           saveResultBtn.style.display = 'none'
           renderVariantsDropdown()
         }
@@ -446,7 +435,8 @@ export function setup(ctx: SpindleFrontendContext) {
         if (payload.category === selectedCategory) {
           categoryVariants = payload.variants || []
           selectedVersionKey = 'live'
-          updateCurrentText(originalTextRaw)
+          currentTextVal = originalTextRaw
+          currentTextInput.update({ value: currentTextVal })
           renderVariantsDropdown()
         }
       }
@@ -455,7 +445,7 @@ export function setup(ctx: SpindleFrontendContext) {
 
     if (payload.type === 'version_applied') {
       if (payload.characterId === selectedChar) {
-        const appliedText = payload.text ?? currentTextValue
+        const appliedText = payload.text ?? currentTextVal
         const cached = fullCharList.find(c => c.id === selectedChar)
 
         if (cached) {
@@ -472,7 +462,8 @@ export function setup(ctx: SpindleFrontendContext) {
           originalTextRaw = appliedText
           selectedVersionKey = 'live'
           renderVariantsDropdown()
-          updateCurrentText(originalTextRaw)
+          currentTextVal = originalTextRaw
+          currentTextInput.update({ value: currentTextVal })
         }
       }
       return
@@ -480,14 +471,16 @@ export function setup(ctx: SpindleFrontendContext) {
 
     if (payload.type === 'generate_token') {
       streamedText += payload.token
-      updateResultText(streamedText)
+      resultTextVal = streamedText
+      resultInput.update({ value: streamedText })
     }
 
     if (payload.type === 'generate_done') {
       isGenerating = false
       generateBtn.textContent = 'Rewrite with AI'
       generateBtn.disabled = false
-      updateResultText(payload.result)
+      resultTextVal = payload.result
+      resultInput.update({ value: payload.result })
       saveResultBtn.style.display = 'block'
     }
 
@@ -510,4 +503,53 @@ export function setup(ctx: SpindleFrontendContext) {
     ctx.sendToBackend({ type: 'get_status' })
     setTimeout(() => {
       if (seq === statusRequestSeq) {
-        permissionWarning.style.d
+        permissionWarning.style.display = 'block'
+        permissionWarning.innerHTML = `<strong>Backend didn't respond.</strong> AI rewriting and saved instructions may be unavailable — try reopening this tab.`
+      }
+    }, WATCHDOG_MS)
+  }
+
+  async function loadEverything() {
+    charSelect.update({ placeholder: "Loading characters...", options: [{ value: '', label: 'Loading characters...' }] })
+
+    requestStatus()
+
+    try {
+      const currentUrl = window.location.pathname + window.location.hash
+      const match = currentUrl.match(/\/(characters|chat)\/([a-zA-Z0-9_-]+)/)
+      const routeType = match ? match[1] : null
+      const routeId = match ? match[2] : null
+
+      const [chars, activeId] = await Promise.all([
+        fetchAllCharactersFromApi(),
+        resolveActiveCharId(routeType, routeId)
+      ])
+
+      fullCharList = chars
+      selectedChar = activeId || (chars[0]?.id ?? '')
+
+      charSelect.update({
+        value: selectedChar, placeholder: "Select Character", searchPlaceholder: "Search...",
+        options: chars.map((c: any) => ({
+          value: c.id, label: c.name, leading: c.image_id ? { type: 'image', src: `/api/v1/images/${c.image_id}?size=sm` } : undefined
+        }))
+      })
+
+      updateCategoryOptions()
+      if (selectedChar) loadCurrentText()
+    } catch (err: any) {
+      charSelect.update({ placeholder: "Error loading characters", options: [] })
+      currentTextVal = `Couldn't load characters: ${err?.message || err}`
+      currentTextInput.update({ value: currentTextVal })
+    }
+  }
+
+  loadEverything()
+
+  return () => {
+    tab.destroy()
+    unsubPermissions()
+    unsubTabActivate()
+    activeMounts.forEach(m => m?.destroy?.())
+  }
+}
