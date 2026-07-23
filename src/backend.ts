@@ -11,8 +11,25 @@ const DEFAULT_PROMPTS = {
 
 const activeGenerations = new Map<string, AbortController>()
 
+/** Helper to conditionally return `{ userId }` options only if `userId` is a valid string. */
+function getOpts(userId?: string): { userId?: string } {
+  return typeof userId === 'string' && userId.length > 0 ? { userId } : {}
+}
+
+/** Deep-clone and strip any `undefined` values (serde_v8 rejects them). */
+function sanitize<T>(obj: T): T {
+  try {
+    return JSON.parse(JSON.stringify(obj ?? {}))
+  } catch {
+    return {} as T
+  }
+}
+
 /** Ensure a value is a dense string array with no nulls/undefineds. */
 function toStringArray(arr: unknown): string[] {
+  if (typeof arr === 'string') {
+    try { arr = JSON.parse(arr) } catch { return [] }
+  }
   if (!Array.isArray(arr)) return []
   return arr.map((v) => (typeof v === 'string' ? v : ''))
 }
@@ -30,8 +47,7 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
       const hasGeneration = spindle.permissions.has('generation')
       const hasCharacters = spindle.permissions.has('characters')
       const hasChats      = spindle.permissions.has('chats')
-      const userOpts = userId ? { userId } : {}
-      const prompts = await spindle.userStorage.getJson('prompts.json', { fallback: DEFAULT_PROMPTS, ...userOpts })
+      const prompts = await spindle.userStorage.getJson('prompts.json', { fallback: DEFAULT_PROMPTS, ...getOpts(userId) })
       spindle.sendToFrontend({ type: 'status_result', hasGeneration, hasCharacters, hasChats, prompts }, userId)
     } catch (err: any) {
       spindle.log.error(`Status error: ${err?.message || err}`)
@@ -48,8 +64,7 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
   // ------------------------------------------------------------------
   else if (payload.type === 'save_prompts') {
     try {
-      const userOpts = userId ? { userId } : {}
-      await spindle.userStorage.setJson('prompts.json', payload.prompts, userOpts)
+      await spindle.userStorage.setJson('prompts.json', payload.prompts, getOpts(userId))
       spindle.toast.success("Instructions updated!")
       spindle.sendToFrontend({ type: 'prompts_updated', prompts: payload.prompts }, userId)
     } catch (err: any) {
@@ -72,9 +87,7 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
       let offset = 0
       const limit = 200
       while (true) {
-        const listOpts: any = { limit, offset }
-        if (userId) listOpts.userId = userId
-        const { data, total } = await spindle.characters.list(listOpts)
+        const { data, total } = await spindle.characters.list({ limit, offset, ...getOpts(userId) })
         allChars.push(...data)
         if (data.length < limit || allChars.length >= total) break
         offset += limit
@@ -97,12 +110,12 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
       if (payload.routeType === 'characters' && typeof payload.routeId === 'string' && payload.routeId) {
         charId = payload.routeId
       } else if (payload.routeType === 'chat' && typeof payload.routeId === 'string' && payload.routeId && spindle.permissions.has('chats')) {
-        const chat = userId ? await spindle.chats.get(payload.routeId, { userId }) : await spindle.chats.get(payload.routeId)
+        const chat = await spindle.chats.get(payload.routeId) // Removed illegal getOpts param
         charId = chat?.character_id || null
       }
 
       if (!charId && spindle.permissions.has('chats')) {
-        const activeChat = userId ? await spindle.chats.getActive({ userId }) : await spindle.chats.getActive()
+        const activeChat = await spindle.chats.getActive() // Removed illegal getOpts param
         charId = activeChat?.character_id || null
       }
 
@@ -131,51 +144,37 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
     }
 
     try {
-      const char = userId 
-        ? await spindle.characters.get(payload.characterId, { userId })
-        : await spindle.characters.get(payload.characterId)
-
+      const char = await spindle.characters.get(payload.characterId) // Removed illegal getOpts param
       if (!char) { sendError('Character not found'); return }
 
       const text = typeof payload.text === 'string' ? payload.text : String(payload.text ?? '')
-      
-      const rewriterData = char.extensions?.['char_rewriter']
-      const currentVariantsMap: Record<string, string[]> = {}
+      const existingRewriter = char.extensions?.['char_rewriter']
+      const variants: Record<string, string[]> = {}
 
-      if (rewriterData?.variants && typeof rewriterData.variants === 'object') {
-        for (const [key, val] of Object.entries(rewriterData.variants)) {
-          currentVariantsMap[key] = toStringArray(val)
-        }
-      }
-
-      if (!currentVariantsMap[payload.category]) {
-        currentVariantsMap[payload.category] = []
-      }
-
-      const catVariants = currentVariantsMap[payload.category]
-      if (catVariants.length === 0 || catVariants[catVariants.length - 1] !== text) {
-        catVariants.push(text)
-      }
-
-      const updatePayload = {
-        extensions: {
-          char_rewriter: {
-            variants: currentVariantsMap
+      if (existingRewriter?.variants && typeof existingRewriter.variants === 'object') {
+        for (const [key, val] of Object.entries(existingRewriter.variants)) {
+          if (Array.isArray(val)) {
+            variants[key] = toStringArray(val)
           }
         }
       }
 
-      if (userId) {
-        await spindle.characters.update(payload.characterId, updatePayload, { userId })
-      } else {
-        await spindle.characters.update(payload.characterId, updatePayload)
+      if (!variants[payload.category]) variants[payload.category] = []
+      if (variants[payload.category].length === 0 || variants[payload.category][variants[payload.category].length - 1] !== text) {
+        variants[payload.category].push(text)
       }
+
+      const extensions = sanitize(char.extensions || {})
+      extensions['char_rewriter'] = sanitize({ variants })
+
+      const updatePayload = sanitize({ extensions })
+      await spindle.characters.update(payload.characterId, updatePayload) // Removed illegal getOpts param
 
       spindle.sendToFrontend({
         type: 'version_saved',
         characterId: payload.characterId,
         category: payload.category,
-        variants: catVariants
+        variants: variants[payload.category]
       }, userId)
     } catch (err: any) {
       spindle.log.error(`Save version error: ${err?.message || err}`)
@@ -201,47 +200,26 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
     }
 
     try {
-      const char = userId 
-        ? await spindle.characters.get(payload.characterId, { userId })
-        : await spindle.characters.get(payload.characterId)
-
+      const char = await spindle.characters.get(payload.characterId)
       if (!char) { sendError('Character not found'); return }
 
-      const rewriterData = char.extensions?.['char_rewriter']
-      const currentVariantsMap: Record<string, string[]> = {}
+      const extensions = sanitize(char.extensions || {})
+      const rewriter = extensions['char_rewriter'] || { variants: {} }
+      if (!rewriter.variants) rewriter.variants = {}
 
-      if (rewriterData?.variants && typeof rewriterData.variants === 'object') {
-        for (const [key, val] of Object.entries(rewriterData.variants)) {
-          currentVariantsMap[key] = toStringArray(val)
-        }
-      }
+      if (Array.isArray(rewriter.variants[payload.category])) {
+        rewriter.variants[payload.category].splice(payload.index, 1)
+        extensions['char_rewriter'] = sanitize(rewriter)
 
-      const categoryList = currentVariantsMap[payload.category] || []
-
-      if (typeof payload.index === 'number' && payload.index >= 0 && payload.index < categoryList.length) {
-        categoryList.splice(payload.index, 1)
-        currentVariantsMap[payload.category] = categoryList
-
-        const updatePayload = {
-          extensions: {
-            char_rewriter: {
-              variants: currentVariantsMap
-            }
-          }
-        }
-
-        if (userId) {
-          await spindle.characters.update(payload.characterId, updatePayload, { userId })
-        } else {
-          await spindle.characters.update(payload.characterId, updatePayload)
-        }
+        const updatePayload = sanitize({ extensions })
+        await spindle.characters.update(payload.characterId, updatePayload)
       }
 
       spindle.sendToFrontend({
         type: 'version_deleted',
         characterId: payload.characterId,
         category: payload.category,
-        variants: categoryList
+        variants: rewriter.variants?.[payload.category] || []
       }, userId)
     } catch (err: any) {
       spindle.log.error(`Delete version error: ${err?.message || err}`)
@@ -268,13 +246,10 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
 
     try {
       const text = typeof payload.text === 'string' ? payload.text : String(payload.text ?? '')
-      let updatePayload: Record<string, any> = {}
+      let updatePayload: any = {}
 
       if (payload.category.startsWith('alt_greeting_')) {
-        const char = userId 
-          ? await spindle.characters.get(payload.characterId, { userId })
-          : await spindle.characters.get(payload.characterId)
-
+        const char = await spindle.characters.get(payload.characterId)
         if (!char) { sendError('Character not found'); return }
 
         const altGreetings = toStringArray(char.alternate_greetings)
@@ -289,11 +264,8 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
         updatePayload = { [payload.category]: text }
       }
 
-      if (userId) {
-        await spindle.characters.update(payload.characterId, updatePayload, { userId })
-      } else {
-        await spindle.characters.update(payload.characterId, updatePayload)
-      }
+      const finalPayload = sanitize(updatePayload)
+      await spindle.characters.update(payload.characterId, finalPayload)
 
       spindle.sendToFrontend({
         type: 'version_applied',
@@ -322,8 +294,7 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
     activeGenerations.set(key, controller)
 
     try {
-      const userOpts = userId ? { userId } : {}
-      const prompts = await spindle.userStorage.getJson('prompts.json', { fallback: DEFAULT_PROMPTS, ...userOpts })
+      const prompts = await spindle.userStorage.getJson('prompts.json', { fallback: DEFAULT_PROMPTS, ...getOpts(userId) })
       const promptCat = payload.category?.startsWith('alt_greeting_') ? 'first_mes' : (payload.category || 'description')
       const sysPrompt = `${prompts.base || ""}\n\nCategory guidance:\n${prompts[promptCat] || ""}`
 
