@@ -1,350 +1,199 @@
 declare const spindle: import('lumiverse-spindle-types').SpindleAPI
 
-const DEFAULT_PROMPTS = {
-  base: "You are an expert creative writer and character designer. Rewrite the following character aspect to be more detailed, engaging, and well-written. Do not add commentary, output only the rewritten text.",
-  description: "Focus on physical appearance, background, and general vibe.",
-  personality: "Focus on traits, quirks, likes, dislikes, and psychological profile.",
-  scenario: "Focus on setting the scene and world-building.",
-  first_mes: "Focus on setting a strong hook, descriptive actions, and an engaging opening dialogue.",
-  mes_example: "Format as dialogue history. Focus on capturing the exact speech patterns, tone, and formatting of the character."
+interface SavedPrompt {
+  id: string
+  title: string
+  prompt: string
 }
 
-const activeGenerations = new Map<string, AbortController>()
-
-/** Helper to conditionally return `{ userId }` options only if `userId` is a valid string. */
-function getOpts(userId?: string): { userId?: string } {
-  return typeof userId === 'string' && userId.length > 0 ? { userId } : {}
+interface SavedVersion {
+  id: string
+  characterId: string
+  field: string
+  text: string
+  promptUsed: string
+  createdAt: string
 }
 
-/** Deep-clone and strip any `undefined` values (serde_v8 rejects them). */
-function sanitize<T>(obj: T): T {
+// Helpers for operator-scoped user storage
+async function loadUserData<T>(filename: string, userId: string, defaultValue: T): Promise<T> {
   try {
-    return JSON.parse(JSON.stringify(obj ?? {}))
+    const data = await spindle.userStorage.readJson<T>(filename, userId)
+    return data ?? defaultValue
   } catch {
-    return {} as T
+    return defaultValue
   }
 }
 
-/** Ensure a value is a dense string array with no nulls/undefineds. */
-function toStringArray(arr: unknown): string[] {
-  if (typeof arr === 'string') {
-    try { arr = JSON.parse(arr) } catch { return [] }
-  }
-  if (!Array.isArray(arr)) return []
-  return arr.map((v) => (typeof v === 'string' ? v : ''))
+async function saveUserData<T>(filename: string, data: T, userId: string): Promise<void> {
+  await spindle.userStorage.writeJson(filename, data, userId)
 }
 
-spindle.onFrontendMessage(async (payload: any, userId?: string) => {
-  const sendError = (error: string) => {
-    spindle.sendToFrontend({ type: 'error', error }, userId)
-  }
+// Frontend Message Router
+spindle.onFrontendMessage(async (payload: any, userId: string) => {
+  if (!userId) return
 
-  // ------------------------------------------------------------------
-  // STATUS
-  // ------------------------------------------------------------------
-  if (payload.type === 'get_status') {
-    try {
-      const hasGeneration = spindle.permissions.has('generation')
-      const hasCharacters = spindle.permissions.has('characters')
-      const hasChats      = spindle.permissions.has('chats')
-      const prompts = await spindle.userStorage.getJson('prompts.json', { fallback: DEFAULT_PROMPTS, ...getOpts(userId) })
-      spindle.sendToFrontend({ type: 'status_result', hasGeneration, hasCharacters, hasChats, prompts }, userId)
-    } catch (err: any) {
-      spindle.log.error(`Status error: ${err?.message || err}`)
+  switch (payload?.type) {
+    // 1. List all character cards
+    case 'get_characters': {
       try {
-        spindle.sendToFrontend({ type: 'status_error', error: err?.message || String(err) }, userId)
-      } catch (sendErr: any) {
-        spindle.log.error(`Failed to notify frontend of status error: ${sendErr?.message || sendErr}`)
+        const characters = await spindle.characters.list({ limit: 200 })
+        spindle.sendToFrontend({ type: 'characters_list', characters }, userId)
+      } catch (err: any) {
+        spindle.sendToFrontend({ type: 'error', message: `Failed to load characters: ${err.message}` }, userId)
       }
+      break
     }
-  }
 
-  // ------------------------------------------------------------------
-  // PROMPTS
-  // ------------------------------------------------------------------
-  else if (payload.type === 'save_prompts') {
-    try {
-      await spindle.userStorage.setJson('prompts.json', payload.prompts, getOpts(userId))
-      spindle.toast.success("Instructions updated!")
-      spindle.sendToFrontend({ type: 'prompts_updated', prompts: payload.prompts }, userId)
-    } catch (err: any) {
-      spindle.log.error(`Save prompts error: ${err?.message || err}`)
-      spindle.toast.error(`Failed to save instructions: ${err?.message || err}`)
-    }
-  }
-
-  // ------------------------------------------------------------------
-  // CHARACTERS
-  // ------------------------------------------------------------------
-  else if (payload.type === 'get_characters') {
-    if (!spindle.permissions.has('characters')) {
-      sendError('Characters permission is required.')
-      spindle.sendToFrontend({ type: 'characters_result', characters: [] }, userId)
-      return
-    }
-    try {
-      const allChars: any[] = []
-      let offset = 0
-      const limit = 200
-      while (true) {
-        const { data, total } = await spindle.characters.list({ limit, offset, ...getOpts(userId) })
-        allChars.push(...data)
-        if (data.length < limit || allChars.length >= total) break
-        offset += limit
+    // 2. Fetch stored prompts and saved field versions
+    case 'get_initial_data': {
+      try {
+        const prompts = await loadUserData<SavedPrompt[]>('prompts.json', userId, [])
+        const versions = await loadUserData<SavedVersion[]>('versions.json', userId, [])
+        spindle.sendToFrontend({ type: 'initial_data', prompts, versions }, userId)
+      } catch (err: any) {
+        spindle.sendToFrontend({ type: 'error', message: err.message }, userId)
       }
-      spindle.sendToFrontend({ type: 'characters_result', characters: allChars }, userId)
-    } catch (err: any) {
-      spindle.log.error(`Get characters error: ${err?.message || err}`)
-      sendError(`Failed to load characters: ${err?.message || err}`)
-      spindle.sendToFrontend({ type: 'characters_result', characters: [] }, userId)
-    }
-  }
-
-  // ------------------------------------------------------------------
-  // RESOLVE ACTIVE CHARACTER
-  // ------------------------------------------------------------------
-  else if (payload.type === 'resolve_active_char') {
-    try {
-      let charId: string | null = null
-
-      if (payload.routeType === 'characters' && typeof payload.routeId === 'string' && payload.routeId) {
-        charId = payload.routeId
-      } else if (payload.routeType === 'chat' && typeof payload.routeId === 'string' && payload.routeId && spindle.permissions.has('chats')) {
-        const chat = await spindle.chats.get(payload.routeId, getOpts(userId))
-        charId = chat?.character_id || null
-      }
-
-      if (!charId && spindle.permissions.has('chats')) {
-        const activeChat = await spindle.chats.getActive(getOpts(userId))
-        charId = activeChat?.character_id || null
-      }
-
-      spindle.sendToFrontend({ type: 'active_char_resolved', characterId: charId }, userId)
-    } catch (err: any) {
-      spindle.log.error(`Resolve active char error: ${err?.message || err}`)
-      spindle.sendToFrontend({ type: 'active_char_resolved', characterId: null }, userId)
-    }
-  }
-
-  // ------------------------------------------------------------------
-  // SAVE VERSION
-  // ------------------------------------------------------------------
-  else if (payload.type === 'save_version') {
-    if (!spindle.permissions.has('characters')) {
-      sendError('Characters permission is required to save versions.')
-      return
-    }
-    if (!payload?.characterId || typeof payload.characterId !== 'string') {
-      sendError('Valid Character ID is required.')
-      return
-    }
-    if (!payload?.category || typeof payload.category !== 'string') {
-      sendError('Category is required.')
-      return
+      break
     }
 
-    try {
-      const char = await spindle.characters.get(payload.characterId, getOpts(userId))
-      if (!char) { sendError('Character not found'); return }
-
-      const text = typeof payload.text === 'string' ? payload.text : String(payload.text ?? '')
-      
-      let rawExtensions: Record<string, any> = {}
-      if (typeof char.extensions === 'string') {
-        try { rawExtensions = JSON.parse(char.extensions) } catch { rawExtensions = {} }
-      } else if (typeof char.extensions === 'object' && char.extensions !== null) {
-        rawExtensions = char.extensions
-      }
-
-      const existingRewriter = rawExtensions['char_rewriter']
-      const variants: Record<string, string[]> = {}
-
-      if (existingRewriter?.variants && typeof existingRewriter.variants === 'object') {
-        for (const [key, val] of Object.entries(existingRewriter.variants)) {
-          if (Array.isArray(val)) {
-            variants[key] = toStringArray(val)
-          }
+    // 3. Save a custom AI Prompt Template
+    case 'save_prompt_template': {
+      try {
+        const prompts = await loadUserData<SavedPrompt[]>('prompts.json', userId, [])
+        const newPrompt: SavedPrompt = {
+          id: crypto.randomUUID(),
+          title: payload.title,
+          prompt: payload.prompt,
         }
+        prompts.push(newPrompt)
+        await saveUserData('prompts.json', prompts, userId)
+        spindle.sendToFrontend({ type: 'prompts_updated', prompts }, userId)
+      } catch (err: any) {
+        spindle.sendToFrontend({ type: 'error', message: `Failed to save prompt: ${err.message}` }, userId)
       }
+      break
+    }
 
-      if (!variants[payload.category]) variants[payload.category] = []
-      if (variants[payload.category].length === 0 || variants[payload.category][variants[payload.category].length - 1] !== text) {
-        variants[payload.category].push(text)
+    // 4. Delete a saved prompt template
+    case 'delete_prompt_template': {
+      try {
+        let prompts = await loadUserData<SavedPrompt[]>('prompts.json', userId, [])
+        prompts = prompts.filter((p) => p.id !== payload.id)
+        await saveUserData('prompts.json', prompts, userId)
+        spindle.sendToFrontend({ type: 'prompts_updated', prompts }, userId)
+      } catch (err: any) {
+        spindle.sendToFrontend({ type: 'error', message: err.message }, userId)
       }
-
-      const extensionsObj = sanitize({ ...rawExtensions, char_rewriter: { variants } })
-      // Must be serialized to string so SQLite database accepts it as a JSON payload
-      const extensionsStr = JSON.stringify(extensionsObj)
-
-      await spindle.characters.update(payload.characterId, { extensions: extensionsStr }, getOpts(userId))
-
-      spindle.sendToFrontend({
-        type: 'version_saved',
-        characterId: payload.characterId,
-        category: payload.category,
-        variants: variants[payload.category]
-      }, userId)
-    } catch (err: any) {
-      spindle.log.error(`Save version error: ${err?.message || err}`)
-      sendError(`Failed to save version: ${err?.message || err}`)
-    }
-  }
-
-  // ------------------------------------------------------------------
-  // DELETE VERSION
-  // ------------------------------------------------------------------
-  else if (payload.type === 'delete_version') {
-    if (!spindle.permissions.has('characters')) {
-      sendError('Characters permission is required to delete versions.')
-      return
-    }
-    if (!payload?.characterId || typeof payload.characterId !== 'string') {
-      sendError('Valid Character ID is required.')
-      return
-    }
-    if (!payload?.category || typeof payload.category !== 'string') {
-      sendError('Category is required.')
-      return
+      break
     }
 
-    try {
-      const char = await spindle.characters.get(payload.characterId, getOpts(userId))
-      if (!char) { sendError('Character not found'); return }
+    // 5. Send Prompt + Characteristic to AI for Rewrite
+    case 'generate_rewrite': {
+      try {
+        const { characterName, fieldLabel, currentValue, instructions } = payload
 
-      let rawExtensions: Record<string, any> = {}
-      if (typeof char.extensions === 'string') {
-        try { rawExtensions = JSON.parse(char.extensions) } catch { rawExtensions = {} }
-      } else if (typeof char.extensions === 'object' && char.extensions !== null) {
-        rawExtensions = char.extensions
+        const systemMessage = `You are a master creative writer, roleplay author, and character designer. 
+Your task is to rewrite or refine a specific field of a character card based strictly on the user's instructions.
+Output ONLY the rewritten text for the field. Do not include introductory notes, markdown codeblock wrappers, or meta-commentary.`
+
+        const userMessage = `Character Name: ${characterName}
+Field to Edit: ${fieldLabel}
+
+--- Original Field Content ---
+${currentValue || '(Empty)'}
+
+--- Instruction / Prompt ---
+${instructions}`
+
+        const result = await spindle.generate.raw({
+          messages: [
+            { role: 'system', content: systemMessage },
+            { role: 'user', content: userMessage },
+          ],
+          parameters: {
+            temperature: 0.75,
+            max_tokens: 2048,
+          },
+        })
+
+        const generatedText = (result.content || '').trim()
+        spindle.sendToFrontend({ type: 'rewrite_generated', text: generatedText }, userId)
+      } catch (err: any) {
+        spindle.sendToFrontend({ type: 'error', message: `AI Generation failed: ${err.message}` }, userId)
       }
-
-      const rewriter = rawExtensions['char_rewriter'] || { variants: {} }
-      if (!rewriter.variants) rewriter.variants = {}
-
-      if (Array.isArray(rewriter.variants[payload.category])) {
-        rewriter.variants[payload.category].splice(payload.index, 1)
-        rawExtensions['char_rewriter'] = rewriter
-
-        // Must be serialized to string so SQLite database accepts it as a JSON payload
-        const extensionsStr = JSON.stringify(rawExtensions)
-        await spindle.characters.update(payload.characterId, { extensions: extensionsStr }, getOpts(userId))
-      }
-
-      spindle.sendToFrontend({
-        type: 'version_deleted',
-        characterId: payload.characterId,
-        category: payload.category,
-        variants: rewriter.variants?.[payload.category] || []
-      }, userId)
-    } catch (err: any) {
-      spindle.log.error(`Delete version error: ${err?.message || err}`)
-      sendError(`Failed to delete version: ${err?.message || err}`)
-    }
-  }
-
-  // ------------------------------------------------------------------
-  // APPLY VERSION
-  // ------------------------------------------------------------------
-  else if (payload.type === 'apply_version') {
-    if (!spindle.permissions.has('characters')) {
-      sendError('Characters permission is required to apply versions.')
-      return
-    }
-    if (!payload?.characterId || typeof payload.characterId !== 'string') {
-      sendError('Valid Character ID is required.')
-      return
-    }
-    if (!payload?.category || typeof payload.category !== 'string') {
-      sendError('Category is required.')
-      return
+      break
     }
 
-    try {
-      const text = typeof payload.text === 'string' ? payload.text : String(payload.text ?? '')
-      let updatePayload: any = {}
-
-      if (payload.category.startsWith('alt_greeting_')) {
-        const char = await spindle.characters.get(payload.characterId, getOpts(userId))
-        if (!char) { sendError('Character not found'); return }
-
-        const altGreetings = toStringArray(char.alternate_greetings)
-        const idx = parseInt(payload.category.replace('alt_greeting_', ''), 10)
-
-        while (altGreetings.length < idx) {
-          altGreetings.push('')
+    // 6. Save rewrite as a persistent version
+    case 'save_version': {
+      try {
+        const versions = await loadUserData<SavedVersion[]>('versions.json', userId, [])
+        const newVersion: SavedVersion = {
+          id: crypto.randomUUID(),
+          characterId: payload.characterId,
+          field: payload.field,
+          text: payload.text,
+          promptUsed: payload.promptUsed,
+          createdAt: new Date().toISOString(),
         }
-        altGreetings[idx] = text
+        versions.unshift(newVersion)
+        await saveUserData('versions.json', versions, userId)
+        spindle.sendToFrontend({ type: 'versions_updated', versions }, userId)
+      } catch (err: any) {
+        spindle.sendToFrontend({ type: 'error', message: `Failed to save version: ${err.message}` }, userId)
+      }
+      break
+    }
+
+    // 7. Delete a saved version
+    case 'delete_version': {
+      try {
+        let versions = await loadUserData<SavedVersion[]>('versions.json', userId, [])
+        versions = versions.filter((v) => v.id !== payload.id)
+        await saveUserData('versions.json', versions, userId)
+        spindle.sendToFrontend({ type: 'versions_updated', versions }, userId)
+      } catch (err: any) {
+        spindle.sendToFrontend({ type: 'error', message: err.message }, userId)
+      }
+      break
+    }
+
+    // 8. Apply saved version directly to original character card
+    case 'apply_to_card': {
+      try {
+        const { characterId, field, newText } = payload
+        const char = await spindle.characters.get(characterId)
+        if (!char) {
+          throw new Error('Character not found')
+        }
+
+        const updatePayload: Record<string, any> = {}
+
+        if (field === 'alternate_greetings') {
+          // Handle alternate greetings (array of strings)
+          const existing = char.alternate_greetings || []
+          updatePayload.alternate_greetings = Array.isArray(newText)
+            ? newText
+            : [newText, ...existing]
+        } else {
+          updatePayload[field] = newText
+        }
+
+        const updatedChar = await spindle.characters.update(characterId, updatePayload)
         
-        // JSON array must be stringified for SQLite
-        updatePayload = { alternate_greetings: JSON.stringify(altGreetings) }
-      } else {
-        updatePayload = { [payload.category]: text }
+        // Refresh character list for frontend
+        const characters = await spindle.characters.list({ limit: 200 })
+        spindle.sendToFrontend(
+          { type: 'card_applied_success', updatedChar, characters, field },
+          userId
+        )
+      } catch (err: any) {
+        spindle.sendToFrontend({ type: 'error', message: `Failed to update character card: ${err.message}` }, userId)
       }
-
-      await spindle.characters.update(payload.characterId, updatePayload, getOpts(userId))
-
-      spindle.sendToFrontend({
-        type: 'version_applied',
-        characterId: payload.characterId,
-        category: payload.category,
-        text
-      }, userId)
-    } catch (err: any) {
-      spindle.log.error(`Apply version error: ${err?.message || err}`)
-      sendError(`Failed to apply version: ${err?.message || err}`)
+      break
     }
-  }
-
-  // ------------------------------------------------------------------
-  // GENERATION
-  // ------------------------------------------------------------------
-  else if (payload.type === 'generate') {
-    if (!spindle.permissions.has('generation')) {
-      spindle.toast.error("Generation permission required.")
-      spindle.sendToFrontend({ type: 'generate_failed' }, userId)
-      return
-    }
-
-    const key = userId || 'default'
-    const controller = new AbortController()
-    activeGenerations.set(key, controller)
-
-    try {
-      const prompts = await spindle.userStorage.getJson('prompts.json', { fallback: DEFAULT_PROMPTS, ...getOpts(userId) })
-      const promptCat = payload.category?.startsWith('alt_greeting_') ? 'first_mes' : (payload.category || 'description')
-      const sysPrompt = `${prompts.base || ""}\n\nCategory guidance:\n${prompts[promptCat] || ""}`
-
-      const genPayload: any = {
-        messages: [
-          { role: 'system', content: sysPrompt },
-          { role: 'user', content: `Original Text:\n${payload.originalText || ""}` }
-        ],
-        signal: controller.signal
-      }
-      if (userId) genPayload.userId = userId
-
-      for await (const chunk of (spindle.generate.quietStream as any)(genPayload)) {
-        if (chunk.type === 'token') {
-          spindle.sendToFrontend({ type: 'generate_token', token: chunk.token }, userId)
-        } else if (chunk.type === 'done') {
-          spindle.sendToFrontend({ type: 'generate_done', result: chunk.content }, userId)
-        }
-      }
-    } catch (err: any) {
-      if (err?.name === 'AbortError') {
-        spindle.sendToFrontend({ type: 'generate_cancelled' }, userId)
-      } else {
-        spindle.toast.error(`Generation failed: ${err?.message || err}`)
-        spindle.sendToFrontend({ type: 'generate_failed', error: err?.message || String(err) }, userId)
-      }
-    } finally {
-      activeGenerations.delete(key)
-    }
-  }
-
-  else if (payload.type === 'generate_cancel') {
-    const key = userId || 'default'
-    const controller = activeGenerations.get(key)
-    if (controller) controller.abort()
   }
 })
+
+spindle.log.info('Character AI Rewriter (Operator Extension) initialized.')
