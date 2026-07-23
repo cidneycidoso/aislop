@@ -27,6 +27,9 @@ function sanitize<T>(obj: T): T {
 
 /** Ensure a value is a dense string array with no nulls/undefineds. */
 function toStringArray(arr: unknown): string[] {
+  if (typeof arr === 'string') {
+    try { arr = JSON.parse(arr) } catch { return [] }
+  }
   if (!Array.isArray(arr)) return []
   return arr.map((v) => (typeof v === 'string' ? v : ''))
 }
@@ -145,7 +148,15 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
       if (!char) { sendError('Character not found'); return }
 
       const text = typeof payload.text === 'string' ? payload.text : String(payload.text ?? '')
-      const existingRewriter = char.extensions?.['char_rewriter']
+      
+      let rawExtensions: Record<string, any> = {}
+      if (typeof char.extensions === 'string') {
+        try { rawExtensions = JSON.parse(char.extensions) } catch { rawExtensions = {} }
+      } else if (typeof char.extensions === 'object' && char.extensions !== null) {
+        rawExtensions = char.extensions
+      }
+
+      const existingRewriter = rawExtensions['char_rewriter']
       const variants: Record<string, string[]> = {}
 
       if (existingRewriter?.variants && typeof existingRewriter.variants === 'object') {
@@ -161,11 +172,10 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
         variants[payload.category].push(text)
       }
 
-      const extensions = sanitize(char.extensions || {})
-      extensions['char_rewriter'] = sanitize({ variants })
+      const extensionsObj = sanitize({ ...rawExtensions, char_rewriter: { variants } })
+      const extensionsStr = JSON.stringify(extensionsObj)
 
-      const updatePayload = sanitize({ extensions })
-      await spindle.characters.update(payload.characterId, updatePayload, getOpts(userId))
+      await spindle.characters.update(payload.characterId, { extensions: extensionsStr }, getOpts(userId))
 
       spindle.sendToFrontend({
         type: 'version_saved',
@@ -200,16 +210,22 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
       const char = await spindle.characters.get(payload.characterId, getOpts(userId))
       if (!char) { sendError('Character not found'); return }
 
-      const extensions = sanitize(char.extensions || {})
-      const rewriter = extensions['char_rewriter'] || { variants: {} }
+      let rawExtensions: Record<string, any> = {}
+      if (typeof char.extensions === 'string') {
+        try { rawExtensions = JSON.parse(char.extensions) } catch { rawExtensions = {} }
+      } else if (typeof char.extensions === 'object' && char.extensions !== null) {
+        rawExtensions = char.extensions
+      }
+
+      const rewriter = rawExtensions['char_rewriter'] || { variants: {} }
       if (!rewriter.variants) rewriter.variants = {}
 
       if (Array.isArray(rewriter.variants[payload.category])) {
         rewriter.variants[payload.category].splice(payload.index, 1)
-        extensions['char_rewriter'] = sanitize(rewriter)
+        rawExtensions['char_rewriter'] = rewriter
 
-        const updatePayload = sanitize({ extensions })
-        await spindle.characters.update(payload.characterId, updatePayload, getOpts(userId))
+        const extensionsStr = JSON.stringify(rawExtensions)
+        await spindle.characters.update(payload.characterId, { extensions: extensionsStr }, getOpts(userId))
       }
 
       spindle.sendToFrontend({
@@ -256,13 +272,12 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
           altGreetings.push('')
         }
         altGreetings[idx] = text
-        updatePayload = { alternate_greetings: altGreetings }
+        updatePayload = { alternate_greetings: JSON.stringify(altGreetings) }
       } else {
         updatePayload = { [payload.category]: text }
       }
 
-      const finalPayload = sanitize(updatePayload)
-      await spindle.characters.update(payload.characterId, finalPayload, getOpts(userId))
+      await spindle.characters.update(payload.characterId, updatePayload, getOpts(userId))
 
       spindle.sendToFrontend({
         type: 'version_applied',
