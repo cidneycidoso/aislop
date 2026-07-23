@@ -72,6 +72,8 @@ async function resolveActiveCharId(routeType: string | null, routeId: string | n
 }
 
 export function setup(ctx: SpindleFrontendContext) {
+  let isInitialized = false
+
   const tab = ctx.ui.registerDrawerTab({
     id: 'ai-rewriter',
     title: 'AI Character Rewriter',
@@ -80,7 +82,7 @@ export function setup(ctx: SpindleFrontendContext) {
   })
 
   const unsubTabActivate = tab.onActivate(() => {
-    loadEverything()
+    if (isInitialized) loadEverything()
   })
 
   const permissionWarning = document.createElement('div')
@@ -114,6 +116,7 @@ export function setup(ctx: SpindleFrontendContext) {
   const charSelect = ctx.components.mountSelect(charSlot, {
     value: '', placeholder: "Loading characters...", options: [{ value: '', label: 'Loading characters...' }],
     onChange: (v) => {
+      if (!isInitialized) return
       selectedChar = v
       updateCategoryOptions()
       loadCurrentText()
@@ -133,29 +136,13 @@ export function setup(ctx: SpindleFrontendContext) {
       { value: 'scenario', label: 'Scenario' },
       { value: 'first_mes', label: 'First Message' }
     ],
-    onChange: (v) => { selectedCategory = v; loadCurrentText() }
+    onChange: (v) => {
+      if (!isInitialized) return
+      selectedCategory = v
+      loadCurrentText()
+    }
   })
   activeMounts.push(catSelect)
-
-  function updateCategoryOptions() {
-    const char = fullCharList.find(c => c.id === selectedChar)
-    const options = [
-      { value: 'description', label: 'Description' },
-      { value: 'personality', label: 'Personality' },
-      { value: 'scenario', label: 'Scenario' },
-      { value: 'mes_example', label: 'Example Messages' },
-      { value: 'first_mes', label: 'Main Greeting' }
-    ]
-
-    if (char && char.alternate_greetings && char.alternate_greetings.length > 0) {
-      char.alternate_greetings.forEach((_: any, idx: number) => {
-        options.push({ value: `alt_greeting_${idx}`, label: `Alt Greeting ${idx + 1}` })
-      })
-    }
-
-    if (!options.find(o => o.value === selectedCategory)) selectedCategory = 'description'
-    catSelect.update({ options, value: selectedCategory })
-  }
 
   // 3. PROMPTS
   const promptSlot = document.createElement('div')
@@ -188,6 +175,7 @@ export function setup(ctx: SpindleFrontendContext) {
   const variantSelect = ctx.components.mountSelect(variantSelectSlot, {
     value: 'live', placeholder: "Select Draft Version", options: [{ value: 'live', label: 'Live Card Text' }],
     onChange: (v) => {
+      if (!isInitialized) return
       selectedVersionKey = v
       if (v === 'live') {
         updateCurrentText(originalTextRaw)
@@ -208,16 +196,6 @@ export function setup(ctx: SpindleFrontendContext) {
     onChange: (v) => { currentTextValue = v }
   })
   activeMounts.push(currentTextInput)
-
-  function updateCurrentText(val: string) {
-    currentTextValue = val
-    currentTextInput.update({ value: val })
-  }
-
-  function updateResultText(val: string) {
-    resultTextValue = val
-    resultInput.update({ value: val })
-  }
 
   const currentActionsRow = document.createElement('div')
   currentActionsRow.style.cssText = 'display:flex;gap:8px;margin-top:-8px;'
@@ -293,6 +271,37 @@ export function setup(ctx: SpindleFrontendContext) {
   saveResultBtn.style.cssText = 'display: none;'
   saveResultBtn.onclick = () => saveVersion(resultTextValue)
   container.appendChild(saveResultBtn)
+
+  // UTILITY HELPERS
+  function updateCurrentText(val: string) {
+    currentTextValue = val
+    currentTextInput.update({ value: val })
+  }
+
+  function updateResultText(val: string) {
+    resultTextValue = val
+    resultInput.update({ value: val })
+  }
+
+  function updateCategoryOptions() {
+    const char = fullCharList.find(c => c.id === selectedChar)
+    const options = [
+      { value: 'description', label: 'Description' },
+      { value: 'personality', label: 'Personality' },
+      { value: 'scenario', label: 'Scenario' },
+      { value: 'mes_example', label: 'Example Messages' },
+      { value: 'first_mes', label: 'Main Greeting' }
+    ]
+
+    if (char && char.alternate_greetings && char.alternate_greetings.length > 0) {
+      char.alternate_greetings.forEach((_: any, idx: number) => {
+        options.push({ value: `alt_greeting_${idx}`, label: `Alt Greeting ${idx + 1}` })
+      })
+    }
+
+    if (!options.find(o => o.value === selectedCategory)) selectedCategory = 'description'
+    catSelect.update({ options, value: selectedCategory })
+  }
 
   function loadCurrentText() {
     const char = fullCharList.find(c => c.id === selectedChar)
@@ -501,30 +510,4 @@ export function setup(ctx: SpindleFrontendContext) {
     ctx.sendToBackend({ type: 'get_status' })
     setTimeout(() => {
       if (seq === statusRequestSeq) {
-        permissionWarning.style.display = 'block'
-        permissionWarning.innerHTML = `<strong>Backend didn't respond.</strong> AI rewriting and saved instructions may be unavailable — try reopening this tab.`
-      }
-    }, WATCHDOG_MS)
-  }
-
-  async function loadEverything() {
-    charSelect.update({ placeholder: "Loading characters...", options: [{ value: '', label: 'Loading characters...' }] })
-
-    requestStatus()
-
-    try {
-      const currentUrl = window.location.pathname + window.location.hash
-      const match = currentUrl.match(/\/(characters|chat)\/([a-zA-Z0-9_-]+)/)
-      const routeType = match ? match[1] : null
-      const routeId = match ? match[2] : null
-
-      const [chars, activeId] = await Promise.all([
-        fetchAllCharactersFromApi(),
-        resolveActiveCharId(routeType, routeId)
-      ])
-
-      fullCharList = chars
-      selectedChar = activeId || (chars[0]?.id ?? '')
-
-      charSelect.update({
-        value: selectedChar, placeholder: "Select Character", searchPlaceholder: "Search...",
+        permissionWarning.style.d
