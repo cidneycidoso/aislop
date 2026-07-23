@@ -1,310 +1,331 @@
-import type { SpindleFrontendContext } from 'lumiverse-spindle-types'
+declare const spindle: import('lumiverse-spindle-types').SpindleAPI
 
-async function apiFetch(path: string, options: RequestInit = {}) {
-  const res = await fetch(path, {
-    credentials: 'same-origin',
-    headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
-    ...options
-  })
-  const text = await res.text()
-  let body: any = null
-  if (text) {
-    try { body = JSON.parse(text) } catch { body = text }
-  }
-  if (!res.ok) {
-    const detail = (body && typeof body === 'object' && body.error) ? body.error : (typeof body === 'string' && body ? body : res.statusText)
-    throw new Error(`${res.status} ${detail}`)
-  }
-  return body
+const DEFAULT_PROMPTS = {
+  base: "You are an expert creative writer and character designer. Rewrite the following character aspect to be more detailed, engaging, and well-written. Do not add commentary, output only the rewritten text.",
+  description: "Focus on physical appearance, background, and general vibe.",
+  personality: "Focus on traits, quirks, likes, dislikes, and psychological profile.",
+  scenario: "Focus on setting the scene and world-building.",
+  first_mes: "Focus on setting a strong hook, descriptive actions, and an engaging opening dialogue.",
+  mes_example: "Format as dialogue history. Focus on capturing the exact speech patterns, tone, and formatting of the character."
 }
 
-async function fetchAllCharactersFromApi(): Promise<any[]> {
-  const byId = new Map<string, any>()
-  let offset = 0
-  const limit = 200
-  let page = 1
-  const MAX_PAGES = 100
+const activeGenerations = new Map<string, AbortController>()
 
-  while (page <= MAX_PAGES) {
-    const result = await apiFetch(`/api/v1/characters?limit=${limit}&offset=${offset}&page=${page}`)
-    const data = Array.isArray(result) ? result : (result?.data ?? [])
-    const total = Array.isArray(result) ? undefined : result?.total
-
-    if (!data.length) break
-
-    const beforeCount = byId.size
-    for (const c of data) byId.set(c.id, c)
-    const newCount = byId.size - beforeCount
-
-    if (newCount === 0) break
-
-    if (data.length < limit || (typeof total === 'number' && byId.size >= total)) {
-      break
-    }
-
-    offset += limit
-    page += 1
-  }
-
-  return Array.from(byId.values())
+/** Helper to conditionally return `{ userId }` options only if `userId` is a valid string. */
+function getOpts(userId?: string): { userId?: string } {
+  return typeof userId === 'string' && userId.length > 0 ? { userId } : {}
 }
 
-async function resolveActiveCharId(routeType: string | null, routeId: string | null): Promise<string | null> {
-  if (routeType === 'characters' && routeId) return routeId
-
-  if (routeType === 'chat' && routeId) {
-    try {
-      const chat = await apiFetch(`/api/v1/chats/${routeId}`)
-      if (chat?.character_id) return chat.character_id
-    } catch (err) {
-      console.warn('[AI Character Rewriter] Could not resolve character from chat route:', err)
-    }
-  }
-
+/** Deep-clone and strip any `undefined` values (serde_v8 rejects them). */
+function sanitize<T>(obj: T): T {
   try {
-    const activeChat = await apiFetch('/api/v1/chats/active')
-    if (activeChat?.character_id) return activeChat.character_id
+    return JSON.parse(JSON.stringify(obj ?? {}))
   } catch {
-    // No active chat
+    return {} as T
   }
-
-  return null
 }
 
-export function setup(ctx: SpindleFrontendContext) {
-  const tab = ctx.ui.registerDrawerTab({
-    id: 'ai-rewriter',
-    title: 'AI Character Rewriter',
-    shortName: 'Rewrite',
-    iconSvg: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>'
-  })
+/** Ensure a value is a dense string array with no nulls/undefineds. */
+function toStringArray(arr: unknown): string[] {
+  if (!Array.isArray(arr)) return []
+  return arr.map((v) => (typeof v === 'string' ? v : ''))
+}
 
-  const unsubTabActivate = tab.onActivate(() => {
-    loadEverything()
-  })
+spindle.onFrontendMessage(async (payload: any, userId?: string) => {
+  const sendError = (error: string) => {
+    spindle.sendToFrontend({ type: 'error', error }, userId)
+  }
 
-  const permissionWarning = document.createElement('div')
-  permissionWarning.style.cssText = 'display:none; padding:16px; margin:16px; background:rgba(239,68,68,0.1); border:1px solid rgba(239,68,68,0.25); border-radius:var(--lumiverse-radius); color:var(--lumiverse-danger); font-size:13px; line-height:1.5;'
-  tab.root.appendChild(permissionWarning)
-
-  const container = document.createElement('div')
-  container.style.cssText = 'display:flex;flex-direction:column;gap:16px;padding:16px;'
-  tab.root.appendChild(container)
-
-  let selectedChar = ''
-  let selectedCategory = 'description'
-  let currentPrompts: any = {}
-  let fullCharList: any[] = []
-  let hasGeneration = true
-
-  let originalTextRaw = ''
-  let categoryVariants: string[] = []
-  let selectedVersionKey = 'live'
-
-  const activeMounts: any[] = []
-  const WATCHDOG_MS = 15000
-  let statusRequestSeq = 0
-
-  // Fetches full individual character details (including `extensions`) and updates cache
-  async function fetchFullCharacter(charId: string): Promise<any> {
-    if (!charId) return null
+  // ------------------------------------------------------------------
+  // STATUS
+  // ------------------------------------------------------------------
+  if (payload.type === 'get_status') {
     try {
-      const fullChar = await apiFetch(`/api/v1/characters/${charId}`)
-      if (fullChar && fullChar.id) {
-        const idx = fullCharList.findIndex(c => c.id === charId)
-        if (idx !== -1) {
-          fullCharList[idx] = fullChar
-        } else {
-          fullCharList.push(fullChar)
+      const hasGeneration = spindle.permissions.has('generation')
+      const hasCharacters = spindle.permissions.has('characters')
+      const hasChats      = spindle.permissions.has('chats')
+      const prompts = await spindle.userStorage.getJson('prompts.json', { fallback: DEFAULT_PROMPTS, ...getOpts(userId) })
+      spindle.sendToFrontend({ type: 'status_result', hasGeneration, hasCharacters, hasChats, prompts }, userId)
+    } catch (err: any) {
+      spindle.log.error(`Status error: ${err?.message || err}`)
+      try {
+        spindle.sendToFrontend({ type: 'status_error', error: err?.message || String(err) }, userId)
+      } catch (sendErr: any) {
+        spindle.log.error(`Failed to notify frontend of status error: ${sendErr?.message || sendErr}`)
+      }
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // PROMPTS
+  // ------------------------------------------------------------------
+  else if (payload.type === 'save_prompts') {
+    try {
+      await spindle.userStorage.setJson('prompts.json', payload.prompts, getOpts(userId))
+      spindle.toast.success("Instructions updated!")
+      spindle.sendToFrontend({ type: 'prompts_updated', prompts: payload.prompts }, userId)
+    } catch (err: any) {
+      spindle.log.error(`Save prompts error: ${err?.message || err}`)
+      spindle.toast.error(`Failed to save instructions: ${err?.message || err}`)
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // CHARACTERS
+  // ------------------------------------------------------------------
+  else if (payload.type === 'get_characters') {
+    if (!spindle.permissions.has('characters')) {
+      sendError('Characters permission is required.')
+      spindle.sendToFrontend({ type: 'characters_result', characters: [] }, userId)
+      return
+    }
+    try {
+      const allChars: any[] = []
+      let offset = 0
+      const limit = 200
+      while (true) {
+        const { data, total } = await spindle.characters.list({ limit, offset, ...getOpts(userId) })
+        allChars.push(...data)
+        if (data.length < limit || allChars.length >= total) break
+        offset += limit
+      }
+      spindle.sendToFrontend({ type: 'characters_result', characters: allChars }, userId)
+    } catch (err: any) {
+      spindle.log.error(`Get characters error: ${err?.message || err}`)
+      sendError(`Failed to load characters: ${err?.message || err}`)
+      spindle.sendToFrontend({ type: 'characters_result', characters: [] }, userId)
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // RESOLVE ACTIVE CHARACTER
+  // ------------------------------------------------------------------
+  else if (payload.type === 'resolve_active_char') {
+    try {
+      let charId: string | null = null
+
+      if (payload.routeType === 'characters' && typeof payload.routeId === 'string' && payload.routeId) {
+        charId = payload.routeId
+      } else if (payload.routeType === 'chat' && typeof payload.routeId === 'string' && payload.routeId && spindle.permissions.has('chats')) {
+        const chat = await spindle.chats.get(payload.routeId, getOpts(userId))
+        charId = chat?.character_id || null
+      }
+
+      if (!charId && spindle.permissions.has('chats')) {
+        const activeChat = await spindle.chats.getActive(getOpts(userId))
+        charId = activeChat?.character_id || null
+      }
+
+      spindle.sendToFrontend({ type: 'active_char_resolved', characterId: charId }, userId)
+    } catch (err: any) {
+      spindle.log.error(`Resolve active char error: ${err?.message || err}`)
+      spindle.sendToFrontend({ type: 'active_char_resolved', characterId: null }, userId)
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // SAVE VERSION
+  // ------------------------------------------------------------------
+  else if (payload.type === 'save_version') {
+    if (!spindle.permissions.has('characters')) {
+      sendError('Characters permission is required to save versions.')
+      return
+    }
+    if (!payload?.characterId || typeof payload.characterId !== 'string') {
+      sendError('Valid Character ID is required.')
+      return
+    }
+    if (!payload?.category || typeof payload.category !== 'string') {
+      sendError('Category is required.')
+      return
+    }
+
+    try {
+      const char = await spindle.characters.get(payload.characterId, getOpts(userId))
+      if (!char) { sendError('Character not found'); return }
+
+      const text = typeof payload.text === 'string' ? payload.text : String(payload.text ?? '')
+      const existingRewriter = char.extensions?.['char_rewriter']
+      const variants: Record<string, string[]> = {}
+
+      if (existingRewriter?.variants && typeof existingRewriter.variants === 'object') {
+        for (const [key, val] of Object.entries(existingRewriter.variants)) {
+          if (Array.isArray(val)) {
+            variants[key] = toStringArray(val)
+          }
         }
-        return fullChar
       }
-    } catch (err) {
-      console.warn('[AI Rewriter] Failed to fetch full character details:', err)
+
+      if (!variants[payload.category]) variants[payload.category] = []
+      if (variants[payload.category].length === 0 || variants[payload.category][variants[payload.category].length - 1] !== text) {
+        variants[payload.category].push(text)
+      }
+
+      const extensions = sanitize(char.extensions || {})
+      extensions['char_rewriter'] = sanitize({ variants })
+
+      const updatePayload = sanitize({ extensions })
+      await spindle.characters.update(payload.characterId, updatePayload, getOpts(userId))
+
+      spindle.sendToFrontend({
+        type: 'version_saved',
+        characterId: payload.characterId,
+        category: payload.category,
+        variants: variants[payload.category]
+      }, userId)
+    } catch (err: any) {
+      spindle.log.error(`Save version error: ${err?.message || err}`)
+      sendError(`Failed to save version: ${err?.message || err}`)
     }
-    return fullCharList.find(c => c.id === charId) || null
   }
 
-  // 1. CHARACTER SELECT DROPDOWN
-  const charSlot = document.createElement('div')
-  container.appendChild(charSlot)
-  const charSelect = ctx.components.mountSelect(charSlot, {
-    value: '', placeholder: "Loading characters...", options: [{ value: '', label: 'Loading characters...' }],
-    onChange: async (v) => {
-      selectedChar = v
-      updateCategoryOptions()
-      await loadCurrentText()
+  // ------------------------------------------------------------------
+  // DELETE VERSION
+  // ------------------------------------------------------------------
+  else if (payload.type === 'delete_version') {
+    if (!spindle.permissions.has('characters')) {
+      sendError('Characters permission is required to delete versions.')
+      return
     }
-  })
-  activeMounts.push(charSelect)
-
-  // 2. CATEGORY SELECT DROPDOWN
-  const catSlot = document.createElement('div')
-  container.appendChild(catSlot)
-  const catSelect = ctx.components.mountSelect(catSlot, {
-    value: selectedCategory,
-    placeholder: "Select Category",
-    options: [
-      { value: 'description', label: 'Description' },
-      { value: 'personality', label: 'Personality' },
-      { value: 'scenario', label: 'Scenario' },
-      { value: 'first_mes', label: 'First Message' }
-    ],
-    onChange: async (v) => { selectedCategory = v; await loadCurrentText() }
-  })
-  activeMounts.push(catSelect)
-
-  function updateCategoryOptions() {
-    const char = fullCharList.find(c => c.id === selectedChar)
-    const options = [
-      { value: 'description', label: 'Description' },
-      { value: 'personality', label: 'Personality' },
-      { value: 'scenario', label: 'Scenario' },
-      { value: 'mes_example', label: 'Example Messages' },
-      { value: 'first_mes', label: 'Main Greeting' }
-    ]
-
-    if (char && char.alternate_greetings && char.alternate_greetings.length > 0) {
-      char.alternate_greetings.forEach((_: any, idx: number) => {
-        options.push({ value: `alt_greeting_${idx}`, label: `Alt Greeting ${idx + 1}` })
-      })
+    if (!payload?.characterId || typeof payload.characterId !== 'string') {
+      sendError('Valid Character ID is required.')
+      return
+    }
+    if (!payload?.category || typeof payload.category !== 'string') {
+      sendError('Category is required.')
+      return
     }
 
-    if (!options.find(o => o.value === selectedCategory)) selectedCategory = 'description'
-    catSelect.update({ options, value: selectedCategory })
+    try {
+      const char = await spindle.characters.get(payload.characterId, getOpts(userId))
+      if (!char) { sendError('Character not found'); return }
+
+      const extensions = sanitize(char.extensions || {})
+      const rewriter = extensions['char_rewriter'] || { variants: {} }
+      if (!rewriter.variants) rewriter.variants = {}
+
+      if (Array.isArray(rewriter.variants[payload.category])) {
+        rewriter.variants[payload.category].splice(payload.index, 1)
+        extensions['char_rewriter'] = sanitize(rewriter)
+
+        const updatePayload = sanitize({ extensions })
+        await spindle.characters.update(payload.characterId, updatePayload, getOpts(userId))
+      }
+
+      spindle.sendToFrontend({
+        type: 'version_deleted',
+        characterId: payload.characterId,
+        category: payload.category,
+        variants: rewriter.variants?.[payload.category] || []
+      }, userId)
+    } catch (err: any) {
+      spindle.log.error(`Delete version error: ${err?.message || err}`)
+      sendError(`Failed to delete version: ${err?.message || err}`)
+    }
   }
 
-  // 3. PROMPTS SECTION
-  const promptSlot = document.createElement('div')
-  container.appendChild(promptSlot)
-  const promptSection = ctx.components.mountCollapsibleSection(promptSlot, {
-    title: 'Edit AI Instructions', defaultExpanded: true
-  })
-  const basePromptInput = ctx.components.mountTextArea(promptSection.body, {
-    value: '', rows: 3, placeholder: 'Base System Prompt', onChange: (v) => { currentPrompts.base = v }
-  })
-  activeMounts.push(basePromptInput)
+  // ------------------------------------------------------------------
+  // APPLY VERSION
+  // ------------------------------------------------------------------
+  else if (payload.type === 'apply_version') {
+    if (!spindle.permissions.has('characters')) {
+      sendError('Characters permission is required to apply versions.')
+      return
+    }
+    if (!payload?.characterId || typeof payload.characterId !== 'string') {
+      sendError('Valid Character ID is required.')
+      return
+    }
+    if (!payload?.category || typeof payload.category !== 'string') {
+      sendError('Category is required.')
+      return
+    }
 
-  const savePromptsBtn = document.createElement('button')
-  savePromptsBtn.textContent = 'Save Instructions'
-  savePromptsBtn.className = 'btn'
-  savePromptsBtn.style.marginTop = '8px'
-  savePromptsBtn.onclick = () => ctx.sendToBackend({ type: 'save_prompts', prompts: currentPrompts })
-  promptSection.body.appendChild(savePromptsBtn)
+    try {
+      const text = typeof payload.text === 'string' ? payload.text : String(payload.text ?? '')
+      let updatePayload: any = {}
 
-  // 4. TEXT VIEWER & DRAFT PICKER
-  const currentTextLabel = document.createElement('div')
-  currentTextLabel.style.cssText = 'font-weight: 500; font-size: 13px; color: var(--lumiverse-text-dim); margin-bottom: -8px;'
-  currentTextLabel.textContent = "Version History / Preview:"
-  container.appendChild(currentTextLabel)
+      if (payload.category.startsWith('alt_greeting_')) {
+        const char = await spindle.characters.get(payload.characterId, getOpts(userId))
+        if (!char) { sendError('Character not found'); return }
 
-  const variantSelectSlot = document.createElement('div')
-  variantSelectSlot.style.display = 'none'
-  container.appendChild(variantSelectSlot)
+        const altGreetings = toStringArray(char.alternate_greetings)
+        const idx = parseInt(payload.category.replace('alt_greeting_', ''), 10)
 
-  const variantSelect = ctx.components.mountSelect(variantSelectSlot, {
-    value: 'live', placeholder: "Select Draft Version", options: [{ value: 'live', label: 'Live Card Text' }],
-    onChange: (v) => {
-      selectedVersionKey = v
-      if (v === 'live') {
-        currentTextInput.update({ value: originalTextRaw })
-        deleteVersionBtn.style.display = 'none'
+        while (altGreetings.length < idx) {
+          altGreetings.push('')
+        }
+        altGreetings[idx] = text
+        updatePayload = { alternate_greetings: altGreetings }
       } else {
-        const idx = parseInt(v, 10)
-        currentTextInput.update({ value: categoryVariants[idx] || '' })
-        deleteVersionBtn.style.display = 'block'
+        updatePayload = { [payload.category]: text }
       }
+
+      const finalPayload = sanitize(updatePayload)
+      await spindle.characters.update(payload.characterId, finalPayload, getOpts(userId))
+
+      spindle.sendToFrontend({
+        type: 'version_applied',
+        characterId: payload.characterId,
+        category: payload.category,
+        text
+      }, userId)
+    } catch (err: any) {
+      spindle.log.error(`Apply version error: ${err?.message || err}`)
+      sendError(`Failed to apply version: ${err?.message || err}`)
     }
-  })
-  activeMounts.push(variantSelect)
-
-  const currentTextSlot = document.createElement('div')
-  container.appendChild(currentTextSlot)
-  const currentTextInput = ctx.components.mountTextArea(currentTextSlot, {
-    value: '', rows: 5, placeholder: 'Select a character card above...'
-  })
-  activeMounts.push(currentTextInput)
-
-  const currentActionsRow = document.createElement('div')
-  currentActionsRow.style.cssText = 'display:flex;gap:8px;margin-top:-8px;'
-  container.appendChild(currentActionsRow)
-
-  const saveCurrentBtn = document.createElement('button')
-  saveCurrentBtn.textContent = 'Save Current as Version'
-  saveCurrentBtn.className = 'btn'
-  saveCurrentBtn.style.flex = '1'
-  saveCurrentBtn.onclick = () => saveVersion(currentTextInput.getValue())
-  currentActionsRow.appendChild(saveCurrentBtn)
-
-  const applyBtn = document.createElement('button')
-  applyBtn.textContent = 'Apply Selected to Card'
-  applyBtn.className = 'btn'
-  applyBtn.style.cssText = 'background: var(--lumiverse-success); color: white; flex: 1;'
-  applyBtn.onclick = () => applyVersion(currentTextInput.getValue())
-  currentActionsRow.appendChild(applyBtn)
-
-  const deleteVersionBtn = document.createElement('button')
-  deleteVersionBtn.textContent = 'Delete Version'
-  deleteVersionBtn.className = 'btn'
-  deleteVersionBtn.style.cssText = 'background: var(--lumiverse-danger); color: white; margin-top:-8px; display:none;'
-  deleteVersionBtn.onclick = () => {
-    if (selectedVersionKey !== 'live') deleteVersion(parseInt(selectedVersionKey, 10))
   }
-  container.appendChild(deleteVersionBtn)
 
-  // 5. GENERATOR
-  const aiDivider = document.createElement('div')
-  aiDivider.style.cssText = 'border-top: 1px solid var(--lumiverse-border); margin: 8px 0;'
-  container.appendChild(aiDivider)
-
-  let isGenerating = false
-  let streamedText = ''
-
-  const generateBtn = document.createElement('button')
-  generateBtn.textContent = 'Rewrite with AI'
-  generateBtn.className = 'btn'
-  generateBtn.style.cssText = 'background: var(--lumiverse-primary); color: white;'
-  generateBtn.onclick = () => {
-    if (!selectedChar) return
-
-    if (isGenerating) {
-      generateBtn.disabled = true
-      generateBtn.textContent = 'Cancelling...'
-      ctx.sendToBackend({ type: 'generate_cancel' })
+  // ------------------------------------------------------------------
+  // GENERATION
+  // ------------------------------------------------------------------
+  else if (payload.type === 'generate') {
+    if (!spindle.permissions.has('generation')) {
+      spindle.toast.error("Generation permission required.")
+      spindle.sendToFrontend({ type: 'generate_failed' }, userId)
       return
     }
 
-    isGenerating = true
-    streamedText = ''
-    resultInput.update({ value: '' })
-    saveResultBtn.style.display = 'none'
-    generateBtn.textContent = 'Stop Generating'
-    ctx.sendToBackend({
-      type: 'generate', characterId: selectedChar, category: selectedCategory, originalText: currentTextInput.getValue()
-    })
-  }
-  container.appendChild(generateBtn)
+    const key = userId || 'default'
+    const controller = new AbortController()
+    activeGenerations.set(key, controller)
 
-  const resultSlot = document.createElement('div')
-  container.appendChild(resultSlot)
-  const resultInput = ctx.components.mountTextArea(resultSlot, {
-    value: '', rows: 5, placeholder: 'AI suggestion will appear here...',
-  })
-  activeMounts.push(resultInput)
+    try {
+      const prompts = await spindle.userStorage.getJson('prompts.json', { fallback: DEFAULT_PROMPTS, ...getOpts(userId) })
+      const promptCat = payload.category?.startsWith('alt_greeting_') ? 'first_mes' : (payload.category || 'description')
+      const sysPrompt = `${prompts.base || ""}\n\nCategory guidance:\n${prompts[promptCat] || ""}`
 
-  const saveResultBtn = document.createElement('button')
-  saveResultBtn.textContent = 'Save AI Result as Version'
-  saveResultBtn.className = 'btn'
-  saveResultBtn.style.cssText = 'display: none;'
-  saveResultBtn.onclick = () => saveVersion(resultInput.getValue())
-  container.appendChild(saveResultBtn)
+      const genPayload: any = {
+        messages: [
+          { role: 'system', content: sysPrompt },
+          { role: 'user', content: `Original Text:\n${payload.originalText || ""}` }
+        ],
+        signal: controller.signal
+      }
+      if (userId) genPayload.userId = userId
 
-  async function loadCurrentText() {
-    if (!selectedChar) {
-      currentTextInput.update({ value: 'Select a character card above...' })
-      variantSelectSlot.style.display = 'none'
-      deleteVersionBtn.style.display = 'none'
-      return
+      for await (const chunk of (spindle.generate.quietStream as any)(genPayload)) {
+        if (chunk.type === 'token') {
+          spindle.sendToFrontend({ type: 'generate_token', token: chunk.token }, userId)
+        } else if (chunk.type === 'done') {
+          spindle.sendToFrontend({ type: 'generate_done', result: chunk.content }, userId)
+        }
+      }
+    } catch (err: any) {
+      if (err?.name === 'AbortError') {
+        spindle.sendToFrontend({ type: 'generate_cancelled' }, userId)
+      } else {
+        spindle.toast.error(`Generation failed: ${err?.message || err}`)
+        spindle.sendToFrontend({ type: 'generate_failed', error: err?.message || String(err) }, userId)
+      }
+    } finally {
+      activeGenerations.delete(key)
     }
+  }
 
-    // Always ensure full character with extensions
+  else if (payload.type === 'generate_cancel') {
+    const key = userId || 'default'
+    const controller = activeGenerations.get(key)
+    if (controller) controller.abort()
+  }
+})
