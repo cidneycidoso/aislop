@@ -147,8 +147,17 @@ export function setup(ctx: SpindleFrontendContext) {
       { value: 'first_mes', label: 'Main Greeting' }
     ]
 
-    if (char && char.alternate_greetings && char.alternate_greetings.length > 0) {
-      char.alternate_greetings.forEach((_: any, idx: number) => {
+    let altGreetings: string[] = []
+    if (char && char.alternate_greetings) {
+      if (typeof char.alternate_greetings === 'string') {
+        try { altGreetings = JSON.parse(char.alternate_greetings) } catch {}
+      } else if (Array.isArray(char.alternate_greetings)) {
+        altGreetings = char.alternate_greetings
+      }
+    }
+
+    if (altGreetings.length > 0) {
+      altGreetings.forEach((_: any, idx: number) => {
         options.push({ value: `alt_greeting_${idx}`, label: `Alt Greeting ${idx + 1}` })
       })
     }
@@ -300,12 +309,22 @@ export function setup(ctx: SpindleFrontendContext) {
     let text = ""
     if (selectedCategory.startsWith('alt_greeting_')) {
       const idx = parseInt(selectedCategory.replace('alt_greeting_', ''), 10)
-      text = (char.alternate_greetings || [])[idx] || ""
+      let altGreetings: string[] = []
+      if (typeof char.alternate_greetings === 'string') {
+        try { altGreetings = JSON.parse(char.alternate_greetings) } catch {}
+      } else if (Array.isArray(char.alternate_greetings)) {
+        altGreetings = char.alternate_greetings
+      }
+      text = altGreetings[idx] || ""
     } else {
       text = char[selectedCategory] || ""
     }
 
-    const extData = char.extensions?.['char_rewriter'] || {}
+    let parsedExtensions: any = char.extensions || {}
+    if (typeof char.extensions === 'string') {
+      try { parsedExtensions = JSON.parse(char.extensions) } catch {}
+    }
+    const extData = parsedExtensions['char_rewriter'] || {}
     categoryVariants = extData.variants?.[selectedCategory] || []
     originalTextRaw = text
     selectedVersionKey = 'live'
@@ -405,10 +424,16 @@ export function setup(ctx: SpindleFrontendContext) {
       if (payload.characterId === selectedChar) {
         const cached = fullCharList.find(c => c.id === selectedChar)
         if (cached) {
-          if (!cached.extensions) cached.extensions = {}
-          if (!cached.extensions.char_rewriter) cached.extensions.char_rewriter = { variants: {} }
-          if (!cached.extensions.char_rewriter.variants) cached.extensions.char_rewriter.variants = {}
-          cached.extensions.char_rewriter.variants[payload.category] = payload.variants
+          let extObj: any = {}
+          if (typeof cached.extensions === 'string') {
+            try { extObj = JSON.parse(cached.extensions) } catch {}
+          } else if (typeof cached.extensions === 'object' && cached.extensions !== null) {
+            extObj = cached.extensions
+          }
+          if (!extObj.char_rewriter) extObj.char_rewriter = { variants: {} }
+          if (!extObj.char_rewriter.variants) extObj.char_rewriter.variants = {}
+          extObj.char_rewriter.variants[payload.category] = payload.variants
+          cached.extensions = extObj
         }
 
         if (payload.category === selectedCategory) {
@@ -428,8 +453,12 @@ export function setup(ctx: SpindleFrontendContext) {
     if (payload.type === 'version_deleted') {
       if (payload.characterId === selectedChar) {
         const cached = fullCharList.find(c => c.id === selectedChar)
-        if (cached?.extensions?.char_rewriter?.variants) {
-          cached.extensions.char_rewriter.variants[payload.category] = payload.variants
+        if (cached?.extensions) {
+          let extObj: any = typeof cached.extensions === 'string' ? JSON.parse(cached.extensions) : cached.extensions
+          if (extObj?.char_rewriter?.variants) {
+            extObj.char_rewriter.variants[payload.category] = payload.variants
+            cached.extensions = extObj
+          }
         }
 
         if (payload.category === selectedCategory) {
@@ -451,8 +480,14 @@ export function setup(ctx: SpindleFrontendContext) {
         if (cached) {
           if (payload.category.startsWith('alt_greeting_')) {
             const idx = parseInt(payload.category.replace('alt_greeting_', ''), 10)
-            if (!cached.alternate_greetings) cached.alternate_greetings = []
-            cached.alternate_greetings[idx] = appliedText
+            let altGreetings: string[] = []
+            if (typeof cached.alternate_greetings === 'string') {
+              try { altGreetings = JSON.parse(cached.alternate_greetings) } catch {}
+            } else if (Array.isArray(cached.alternate_greetings)) {
+              altGreetings = cached.alternate_greetings
+            }
+            altGreetings[idx] = appliedText
+            cached.alternate_greetings = altGreetings
           } else {
             cached[payload.category] = appliedText
           }
