@@ -1,6 +1,5 @@
 import type { SpindleFrontendContext } from 'lumiverse-spindle-types'
 
-// --- REST API HELPER ---
 async function apiFetch(path: string, options: RequestInit = {}) {
   const res = await fetch(path, {
     credentials: 'same-origin',
@@ -27,26 +26,24 @@ async function fetchAllCharactersFromApi(): Promise<any[]> {
   const MAX_PAGES = 100
 
   while (page <= MAX_PAGES) {
-    try {
-      const result = await apiFetch(`/api/v1/characters?limit=${limit}&offset=${offset}&page=${page}`)
-      const data = Array.isArray(result) ? result : (result?.data ?? [])
-      const total = Array.isArray(result) ? undefined : result?.total
+    const result = await apiFetch(`/api/v1/characters?limit=${limit}&offset=${offset}&page=${page}`)
+    const data = Array.isArray(result) ? result : (result?.data ?? [])
+    const total = Array.isArray(result) ? undefined : result?.total
 
-      if (!data.length) break
+    if (!data.length) break
 
-      const beforeCount = byId.size
-      for (const c of data) byId.set(c.id, c)
-      const newCount = byId.size - beforeCount
+    const beforeCount = byId.size
+    for (const c of data) byId.set(c.id, c)
+    const newCount = byId.size - beforeCount
 
-      if (newCount === 0) break
-      if (data.length < limit || (typeof total === 'number' && byId.size >= total)) break
+    if (newCount === 0) break
 
-      offset += limit
-      page += 1
-    } catch (e) {
-      console.warn('[AI Rewriter] Page fetch error:', e)
+    if (data.length < limit || (typeof total === 'number' && byId.size >= total)) {
       break
     }
+
+    offset += limit
+    page += 1
   }
 
   return Array.from(byId.values())
@@ -59,8 +56,8 @@ async function resolveActiveCharId(routeType: string | null, routeId: string | n
     try {
       const chat = await apiFetch(`/api/v1/chats/${routeId}`)
       if (chat?.character_id) return chat.character_id
-    } catch {
-      // Non-fatal fallback
+    } catch (err) {
+      console.warn('[AI Character Rewriter] Could not resolve character from chat route:', err)
     }
   }
 
@@ -68,39 +65,31 @@ async function resolveActiveCharId(routeType: string | null, routeId: string | n
     const activeChat = await apiFetch('/api/v1/chats/active')
     if (activeChat?.character_id) return activeChat.character_id
   } catch {
-    // Non-fatal fallback
+    // No active chat
   }
 
   return null
 }
 
 export function setup(ctx: SpindleFrontendContext) {
-  let tab: any = null
-  try {
-    tab = ctx.ui.registerDrawerTab({
-      id: 'ai-rewriter',
-      title: 'AI Character Rewriter',
-      shortName: 'Rewrite',
-      iconSvg: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>'
-    })
-  } catch (err) {
-    console.error('[AI Rewriter] Failed to register drawer tab:', err)
-    return () => {}
-  }
+  const tab = ctx.ui.registerDrawerTab({
+    id: 'ai-rewriter',
+    title: 'AI Character Rewriter',
+    shortName: 'Rewrite',
+    iconSvg: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>'
+  })
 
-  if (!tab || !tab.root) return () => {}
-
-  // Styling helper for consistent Lumiverse UI elements
-  const inputStyle = 'width:100%; padding:8px 12px; border-radius:var(--lumiverse-radius, 6px); border:1px solid var(--lumiverse-border, #333); background:var(--lumiverse-bg-secondary, #1e1e1e); color:var(--lumiverse-text, #fff); font-size:13px; font-family:inherit; box-sizing:border-box;'
-  const btnStyle = 'padding:8px 14px; border-radius:var(--lumiverse-radius, 6px); border:none; cursor:pointer; font-weight:600; font-size:13px; font-family:inherit; transition:opacity 0.2s;'
-
-  const container = document.createElement('div')
-  container.style.cssText = 'display:flex; flex-direction:column; gap:14px; padding:16px; box-sizing:border-box;'
-  tab.root.appendChild(container)
+  const unsubTabActivate = tab.onActivate(() => {
+    loadEverything()
+  })
 
   const permissionWarning = document.createElement('div')
-  permissionWarning.style.cssText = 'display:none; padding:12px; background:rgba(239,68,68,0.1); border:1px solid rgba(239,68,68,0.25); border-radius:var(--lumiverse-radius, 6px); color:var(--lumiverse-danger, #ef4444); font-size:13px; line-height:1.4;'
-  container.appendChild(permissionWarning)
+  permissionWarning.style.cssText = 'display:none; padding:16px; margin:16px; background:rgba(239,68,68,0.1); border:1px solid rgba(239,68,68,0.25); border-radius:var(--lumiverse-radius); color:var(--lumiverse-danger); font-size:13px; line-height:1.5;'
+  tab.root.appendChild(permissionWarning)
+
+  const container = document.createElement('div')
+  container.style.cssText = 'display:flex;flex-direction:column;gap:16px;padding:16px;'
+  tab.root.appendChild(container)
 
   let selectedChar = ''
   let selectedCategory = 'description'
@@ -111,28 +100,39 @@ export function setup(ctx: SpindleFrontendContext) {
   let originalTextRaw = ''
   let categoryVariants: string[] = []
   let selectedVersionKey = 'live'
-  let statusRequestSeq = 0
+
+  const activeMounts: any[] = []
   const WATCHDOG_MS = 15000
+  let statusRequestSeq = 0
 
   // 1. CHARACTER SELECT
-  const charSelect = document.createElement('select')
-  charSelect.style.cssText = inputStyle
-  charSelect.innerHTML = '<option value="">Loading characters...</option>'
-  charSelect.onchange = () => {
-    selectedChar = charSelect.value
-    updateCategoryOptions()
-    loadCurrentText().catch(console.error)
-  }
-  container.appendChild(charSelect)
+  const charSlot = document.createElement('div')
+  container.appendChild(charSlot)
+  const charSelect = ctx.components.mountSelect(charSlot, {
+    value: '', placeholder: "Loading characters...", options: [{ value: '', label: 'Loading characters...' }],
+    onChange: (v) => {
+      selectedChar = v
+      updateCategoryOptions()
+      loadCurrentText()
+    }
+  })
+  activeMounts.push(charSelect)
 
   // 2. CATEGORY SELECT
-  const catSelect = document.createElement('select')
-  catSelect.style.cssText = inputStyle
-  catSelect.onchange = () => {
-    selectedCategory = catSelect.value
-    loadCurrentText().catch(console.error)
-  }
-  container.appendChild(catSelect)
+  const catSlot = document.createElement('div')
+  container.appendChild(catSlot)
+  const catSelect = ctx.components.mountSelect(catSlot, {
+    value: selectedCategory,
+    placeholder: "Select Category",
+    options: [
+      { value: 'description', label: 'Description' },
+      { value: 'personality', label: 'Personality' },
+      { value: 'scenario', label: 'Scenario' },
+      { value: 'first_mes', label: 'First Message' }
+    ],
+    onChange: (v) => { selectedCategory = v; loadCurrentText() }
+  })
+  activeMounts.push(catSelect)
 
   function updateCategoryOptions() {
     const char = fullCharList.find(c => c.id === selectedChar)
@@ -144,106 +144,97 @@ export function setup(ctx: SpindleFrontendContext) {
       { value: 'first_mes', label: 'Main Greeting' }
     ]
 
-    if (char?.alternate_greetings && Array.isArray(char.alternate_greetings)) {
+    if (char && char.alternate_greetings && char.alternate_greetings.length > 0) {
       char.alternate_greetings.forEach((_: any, idx: number) => {
         options.push({ value: `alt_greeting_${idx}`, label: `Alt Greeting ${idx + 1}` })
       })
     }
 
     if (!options.find(o => o.value === selectedCategory)) selectedCategory = 'description'
-    catSelect.innerHTML = ''
-    options.forEach(o => {
-      const opt = document.createElement('option')
-      opt.value = o.value
-      opt.textContent = o.label
-      if (o.value === selectedCategory) opt.selected = true
-      catSelect.appendChild(opt)
-    })
+    catSelect.update({ options, value: selectedCategory })
   }
 
-  // 3. PROMPTS SECTION (COLLAPSIBLE)
-  const details = document.createElement('details')
-  details.open = false
-  details.style.cssText = 'border:1px solid var(--lumiverse-border, #333); border-radius:var(--lumiverse-radius, 6px); padding:8px 12px; background:var(--lumiverse-bg-secondary, #1e1e1e);'
-  
-  const summary = document.createElement('summary')
-  summary.textContent = 'Edit AI Instructions'
-  summary.style.cssText = 'cursor:pointer; font-weight:600; font-size:13px; color:var(--lumiverse-text, #fff); user-select:none;'
-  details.appendChild(summary)
-
-  const promptBody = document.createElement('div')
-  promptBody.style.cssText = 'margin-top:8px; display:flex; flex-direction:column; gap:8px;'
-
-  const basePromptInput = document.createElement('textarea')
-  basePromptInput.rows = 3
-  basePromptInput.placeholder = 'Base System Prompt'
-  basePromptInput.style.cssText = inputStyle + ' resize:vertical;'
-  basePromptInput.oninput = () => { currentPrompts.base = basePromptInput.value }
-  promptBody.appendChild(basePromptInput)
+  // 3. PROMPTS
+  const promptSlot = document.createElement('div')
+  container.appendChild(promptSlot)
+  const promptSection = ctx.components.mountCollapsibleSection(promptSlot, {
+    title: 'Edit AI Instructions', defaultExpanded: true
+  })
+  const basePromptInput = ctx.components.mountTextArea(promptSection.body, {
+    value: '', rows: 3, placeholder: 'Base System Prompt', onChange: (v) => { currentPrompts.base = v }
+  })
+  activeMounts.push(basePromptInput)
 
   const savePromptsBtn = document.createElement('button')
   savePromptsBtn.textContent = 'Save Instructions'
-  savePromptsBtn.style.cssText = btnStyle + ' background:var(--lumiverse-bg-elevated, #2a2a2a); color:var(--lumiverse-text, #fff); align-self:flex-start;'
+  savePromptsBtn.className = 'btn'
+  savePromptsBtn.style.marginTop = '8px'
   savePromptsBtn.onclick = () => ctx.sendToBackend({ type: 'save_prompts', prompts: currentPrompts })
-  promptBody.appendChild(savePromptsBtn)
+  promptSection.body.appendChild(savePromptsBtn)
 
-  details.appendChild(promptBody)
-  container.appendChild(details)
-
-  // 4. VERSION HISTORY & TEXT PREVIEW
+  // 4. TEXT VIEWER
   const currentTextLabel = document.createElement('div')
-  currentTextLabel.style.cssText = 'font-weight:500; font-size:13px; color:var(--lumiverse-text-dim, #aaa); margin-bottom:-6px;'
+  currentTextLabel.style.cssText = 'font-weight: 500; font-size: 13px; color: var(--lumiverse-text-dim); margin-bottom: -8px;'
   currentTextLabel.textContent = "Version History / Preview:"
   container.appendChild(currentTextLabel)
 
-  const variantSelect = document.createElement('select')
-  variantSelect.style.cssText = inputStyle + ' display:none;'
-  variantSelect.onchange = () => {
-    selectedVersionKey = variantSelect.value
-    if (selectedVersionKey === 'live') {
-      currentTextInput.value = originalTextRaw
-      deleteVersionBtn.style.display = 'none'
-    } else {
-      const idx = parseInt(selectedVersionKey, 10)
-      currentTextInput.value = categoryVariants[idx] || ''
-      deleteVersionBtn.style.display = 'block'
-    }
-  }
-  container.appendChild(variantSelect)
+  const variantSelectSlot = document.createElement('div')
+  variantSelectSlot.style.display = 'none'
+  container.appendChild(variantSelectSlot)
 
-  const currentTextInput = document.createElement('textarea')
-  currentTextInput.rows = 5
-  currentTextInput.placeholder = 'Select a character card above...'
-  currentTextInput.style.cssText = inputStyle + ' resize:vertical;'
-  container.appendChild(currentTextInput)
+  const variantSelect = ctx.components.mountSelect(variantSelectSlot, {
+    value: 'live', placeholder: "Select Draft Version", options: [{ value: 'live', label: 'Live Card Text' }],
+    onChange: (v) => {
+      selectedVersionKey = v
+      if (v === 'live') {
+        currentTextInput.update({ value: originalTextRaw })
+        deleteVersionBtn.style.display = 'none'
+      } else {
+        const idx = parseInt(v, 10)
+        currentTextInput.update({ value: categoryVariants[idx] || '' })
+        deleteVersionBtn.style.display = 'block'
+      }
+    }
+  })
+  activeMounts.push(variantSelect)
+
+  const currentTextSlot = document.createElement('div')
+  container.appendChild(currentTextSlot)
+  const currentTextInput = ctx.components.mountTextArea(currentTextSlot, {
+    value: '', rows: 5, placeholder: 'Select a character card above...'
+  })
+  activeMounts.push(currentTextInput)
 
   const currentActionsRow = document.createElement('div')
-  currentActionsRow.style.cssText = 'display:flex; gap:8px;'
+  currentActionsRow.style.cssText = 'display:flex;gap:8px;margin-top:-8px;'
   container.appendChild(currentActionsRow)
 
   const saveCurrentBtn = document.createElement('button')
   saveCurrentBtn.textContent = 'Save Current as Version'
-  saveCurrentBtn.style.cssText = btnStyle + ' flex:1; background:var(--lumiverse-bg-elevated, #2a2a2a); color:var(--lumiverse-text, #fff);'
-  saveCurrentBtn.onclick = () => saveVersion(currentTextInput.value)
+  saveCurrentBtn.className = 'btn'
+  saveCurrentBtn.style.flex = '1'
+  saveCurrentBtn.onclick = () => saveVersion(currentTextInput.getValue())
   currentActionsRow.appendChild(saveCurrentBtn)
 
   const applyBtn = document.createElement('button')
   applyBtn.textContent = 'Apply Selected to Card'
-  applyBtn.style.cssText = btnStyle + ' flex:1; background:var(--lumiverse-success, #22c55e); color:#fff;'
-  applyBtn.onclick = () => applyVersion(currentTextInput.value)
+  applyBtn.className = 'btn'
+  applyBtn.style.cssText = 'background: var(--lumiverse-success); color: white; flex: 1;'
+  applyBtn.onclick = () => applyVersion(currentTextInput.getValue())
   currentActionsRow.appendChild(applyBtn)
 
   const deleteVersionBtn = document.createElement('button')
   deleteVersionBtn.textContent = 'Delete Version'
-  deleteVersionBtn.style.cssText = btnStyle + ' background:var(--lumiverse-danger, #ef4444); color:#fff; display:none;'
+  deleteVersionBtn.className = 'btn'
+  deleteVersionBtn.style.cssText = 'background: var(--lumiverse-danger); color: white; margin-top:-8px; display:none;'
   deleteVersionBtn.onclick = () => {
     if (selectedVersionKey !== 'live') deleteVersion(parseInt(selectedVersionKey, 10))
   }
   container.appendChild(deleteVersionBtn)
 
-  // 5. AI GENERATOR
+  // 5. GENERATOR
   const aiDivider = document.createElement('div')
-  aiDivider.style.cssText = 'border-top:1px solid var(--lumiverse-border, #333); margin:4px 0;'
+  aiDivider.style.cssText = 'border-top: 1px solid var(--lumiverse-border); margin: 8px 0;'
   container.appendChild(aiDivider)
 
   let isGenerating = false
@@ -251,7 +242,8 @@ export function setup(ctx: SpindleFrontendContext) {
 
   const generateBtn = document.createElement('button')
   generateBtn.textContent = 'Rewrite with AI'
-  generateBtn.style.cssText = btnStyle + ' background:var(--lumiverse-primary, #3b82f6); color:#fff; width:100%;'
+  generateBtn.className = 'btn'
+  generateBtn.style.cssText = 'background: var(--lumiverse-primary); color: white;'
   generateBtn.onclick = () => {
     if (!selectedChar) return
 
@@ -264,56 +256,34 @@ export function setup(ctx: SpindleFrontendContext) {
 
     isGenerating = true
     streamedText = ''
-    resultInput.value = ''
+    resultInput.update({ value: '' })
     saveResultBtn.style.display = 'none'
     generateBtn.textContent = 'Stop Generating'
     ctx.sendToBackend({
-      type: 'generate', characterId: selectedChar, category: selectedCategory, originalText: currentTextInput.value
+      type: 'generate', characterId: selectedChar, category: selectedCategory, originalText: currentTextInput.getValue()
     })
   }
   container.appendChild(generateBtn)
 
-  const resultInput = document.createElement('textarea')
-  resultInput.rows = 5
-  resultInput.placeholder = 'AI suggestion will appear here...'
-  resultInput.style.cssText = inputStyle + ' resize:vertical;'
-  container.appendChild(resultInput)
+  const resultSlot = document.createElement('div')
+  container.appendChild(resultSlot)
+  const resultInput = ctx.components.mountTextArea(resultSlot, {
+    value: '', rows: 5, placeholder: 'AI suggestion will appear here...',
+  })
+  activeMounts.push(resultInput)
 
   const saveResultBtn = document.createElement('button')
   saveResultBtn.textContent = 'Save AI Result as Version'
-  saveResultBtn.style.cssText = btnStyle + ' background:var(--lumiverse-primary, #3b82f6); color:#fff; display:none; width:100%;'
-  saveResultBtn.onclick = () => saveVersion(resultInput.value)
+  saveResultBtn.className = 'btn'
+  saveResultBtn.style.cssText = 'display: none;'
+  saveResultBtn.onclick = () => saveVersion(resultInput.getValue())
   container.appendChild(saveResultBtn)
 
-  // Fetch single full character detail to populate full extensions object
-  async function fetchFullCharacter(charId: string): Promise<any> {
-    if (!charId) return null
-    try {
-      const fullChar = await apiFetch(`/api/v1/characters/${charId}`)
-      if (fullChar && fullChar.id) {
-        const idx = fullCharList.findIndex(c => c.id === charId)
-        if (idx !== -1) fullCharList[idx] = fullChar
-        else fullCharList.push(fullChar)
-        return fullChar
-      }
-    } catch (err) {
-      console.warn('[AI Rewriter] Fetch full character error:', err)
-    }
-    return fullCharList.find(c => c.id === charId) || null
-  }
-
-  async function loadCurrentText() {
-    if (!selectedChar) {
-      currentTextInput.value = 'Select a character card above...'
-      variantSelect.style.display = 'none'
-      deleteVersionBtn.style.display = 'none'
-      return
-    }
-
-    const char = await fetchFullCharacter(selectedChar)
+  function loadCurrentText() {
+    const char = fullCharList.find(c => c.id === selectedChar)
     if (!char) {
-      currentTextInput.value = 'Select a character card above...'
-      variantSelect.style.display = 'none'
+      currentTextInput.update({ value: 'Select a character card above...' })
+      variantSelectSlot.style.display = 'none'
       deleteVersionBtn.style.display = 'none'
       return
     }
@@ -331,145 +301,72 @@ export function setup(ctx: SpindleFrontendContext) {
     originalTextRaw = text
     selectedVersionKey = 'live'
 
-    currentTextInput.value = originalTextRaw
-    resultInput.value = ''
+    currentTextInput.update({ value: originalTextRaw })
+    resultInput.update({ value: '' })
     saveResultBtn.style.display = 'none'
 
     renderVariantsDropdown()
   }
 
   function renderVariantsDropdown() {
-    variantSelect.innerHTML = '<option value="live">Live Card Text</option>'
+    const variantOptions = [{ value: 'live', label: 'Live Card Text' }]
     categoryVariants.forEach((_, i) => {
-      const opt = document.createElement('option')
-      opt.value = i.toString()
-      opt.textContent = `Saved Version ${i + 1}`
-      variantSelect.appendChild(opt)
+      variantOptions.push({ value: i.toString(), label: `Saved Version ${i + 1}` })
     })
 
-    variantSelect.value = selectedVersionKey
-    variantSelect.style.display = 'block'
+    variantSelectSlot.style.display = 'block'
+    variantSelect.update({ options: variantOptions, value: selectedVersionKey })
     deleteVersionBtn.style.display = selectedVersionKey === 'live' ? 'none' : 'block'
   }
 
-  async function withCurrentCharacter(work: (char: any) => Promise<any> | any): Promise<void> {
+  function saveVersion(text: string) {
     if (!selectedChar) {
       alert('Please select a character first.')
       return
     }
-    try {
-      const char = await fetchFullCharacter(selectedChar)
-      if (!char) throw new Error('Character not found')
-      await work(char)
-    } catch (err: any) {
-      alert(`Action failed: ${err?.message || err}`)
+    ctx.sendToBackend({
+      type: 'save_version',
+      characterId: selectedChar,
+      category: selectedCategory,
+      text
+    })
+  }
+
+  function deleteVersion(index: number) {
+    if (!selectedChar) return
+    ctx.sendToBackend({
+      type: 'delete_version',
+      characterId: selectedChar,
+      category: selectedCategory,
+      index
+    })
+  }
+
+  function applyVersion(text: string) {
+    if (!selectedChar) {
+      alert('Please select a character first.')
+      return
     }
-  }
-
-  async function saveVersion(text: string) {
-    await withCurrentCharacter(async (char) => {
-      const extensions = JSON.parse(JSON.stringify(char.extensions || {}))
-      if (!extensions.char_rewriter) extensions.char_rewriter = { variants: {} }
-      if (!extensions.char_rewriter.variants) extensions.char_rewriter.variants = {}
-      if (!extensions.char_rewriter.variants[selectedCategory]) {
-        extensions.char_rewriter.variants[selectedCategory] = []
-      }
-
-      const list: string[] = extensions.char_rewriter.variants[selectedCategory]
-      if (list.length === 0 || list[list.length - 1] !== text) {
-        list.push(text)
-        const updatedChar = await apiFetch(`/api/v1/characters/${selectedChar}`, {
-          method: 'PATCH',
-          body: JSON.stringify({ extensions })
-        })
-
-        if (updatedChar && updatedChar.id) {
-          const idx = fullCharList.findIndex(c => c.id === selectedChar)
-          if (idx !== -1) fullCharList[idx] = updatedChar
-        }
-      }
-
-      await loadCurrentText()
-      selectedVersionKey = categoryVariants.length > 0 ? (categoryVariants.length - 1).toString() : 'live'
-      renderVariantsDropdown()
-      currentTextInput.value = categoryVariants.length > 0 ? categoryVariants[categoryVariants.length - 1] : originalTextRaw
-      resultInput.value = ''
-      saveResultBtn.style.display = 'none'
+    ctx.sendToBackend({
+      type: 'apply_version',
+      characterId: selectedChar,
+      category: selectedCategory,
+      text
     })
   }
 
-  async function deleteVersion(index: number) {
-    await withCurrentCharacter(async (char) => {
-      const extensions = JSON.parse(JSON.stringify(char.extensions || {}))
-      const rewriter = extensions.char_rewriter || { variants: {} }
-
-      if (rewriter.variants?.[selectedCategory]) {
-        rewriter.variants[selectedCategory].splice(index, 1)
-        extensions.char_rewriter = rewriter
-
-        const updatedChar = await apiFetch(`/api/v1/characters/${selectedChar}`, {
-          method: 'PATCH',
-          body: JSON.stringify({ extensions })
-        })
-
-        if (updatedChar && updatedChar.id) {
-          const idx = fullCharList.findIndex(c => c.id === selectedChar)
-          if (idx !== -1) fullCharList[idx] = updatedChar
-        }
-      }
-
-      await loadCurrentText()
-    })
-  }
-
-  async function applyVersion(text: string) {
-    await withCurrentCharacter(async (char) => {
-      let updatePayload: any = {}
-      if (selectedCategory.startsWith('alt_greeting_')) {
-        const altGreetings = [...(char.alternate_greetings || [])]
-        const idx = parseInt(selectedCategory.replace('alt_greeting_', ''), 10)
-        while (altGreetings.length < idx) altGreetings.push('')
-        altGreetings[idx] = text
-        updatePayload = { alternate_greetings: altGreetings }
-      } else {
-        updatePayload = { [selectedCategory]: text }
-      }
-
-      if (char.extensions) {
-        updatePayload.extensions = char.extensions
-      }
-
-      const updatedChar = await apiFetch(`/api/v1/characters/${selectedChar}`, {
-        method: 'PATCH',
-        body: JSON.stringify(updatePayload)
-      })
-
-      if (updatedChar && updatedChar.id) {
-        const idx = fullCharList.findIndex(c => c.id === selectedChar)
-        if (idx !== -1) fullCharList[idx] = updatedChar
-      }
-
-      originalTextRaw = text
-      selectedVersionKey = 'live'
-      renderVariantsDropdown()
-      currentTextInput.value = originalTextRaw
-    })
-  }
-
-  const unsubPermissions = ctx.events?.on?.('PERMISSION_CHANGED', () => { 
-    loadEverything().catch(console.error) 
-  })
+  const unsubPermissions = ctx.events.on('PERMISSION_CHANGED', () => { loadEverything() })
 
   ctx.onBackendMessage((payload: any) => {
     if (payload.type === 'status_result') {
       statusRequestSeq++
       hasGeneration = payload.hasGeneration
-      currentPrompts = payload.prompts || {}
-      basePromptInput.value = currentPrompts.base || ''
+      currentPrompts = payload.prompts
+      basePromptInput.update({ value: currentPrompts.base })
       generateBtn.style.display = hasGeneration ? 'block' : 'none'
       if (!hasGeneration) {
         permissionWarning.style.display = 'block'
-        permissionWarning.innerHTML = `<strong>Generation permission not granted.</strong> AI rewriting is disabled until granted in extension settings.`
+        permissionWarning.innerHTML = `<strong>Generation permission not granted.</strong> AI rewriting is disabled until it's enabled in the extension's permissions.`
       } else {
         permissionWarning.style.display = 'none'
       }
@@ -484,20 +381,86 @@ export function setup(ctx: SpindleFrontendContext) {
     }
 
     if (payload.type === 'prompts_updated') {
-      currentPrompts = payload.prompts || {}
-      basePromptInput.value = currentPrompts.base || ''
+      currentPrompts = payload.prompts
+      basePromptInput.update({ value: currentPrompts.base })
+    }
+
+    if (payload.type === 'version_saved') {
+      if (payload.characterId === selectedChar) {
+        const cached = fullCharList.find(c => c.id === selectedChar)
+        if (cached) {
+          if (!cached.extensions) cached.extensions = {}
+          if (!cached.extensions.char_rewriter) cached.extensions.char_rewriter = { variants: {} }
+          if (!cached.extensions.char_rewriter.variants) cached.extensions.char_rewriter.variants = {}
+          cached.extensions.char_rewriter.variants[payload.category] = payload.variants
+        }
+
+        if (payload.category === selectedCategory) {
+          categoryVariants = payload.variants || []
+          selectedVersionKey = categoryVariants.length > 0 ? (categoryVariants.length - 1).toString() : 'live'
+          currentTextInput.update({
+            value: categoryVariants.length > 0 ? categoryVariants[categoryVariants.length - 1] : originalTextRaw
+          })
+          resultInput.update({ value: '' })
+          saveResultBtn.style.display = 'none'
+          renderVariantsDropdown()
+        }
+      }
+      return
+    }
+
+    if (payload.type === 'version_deleted') {
+      if (payload.characterId === selectedChar) {
+        const cached = fullCharList.find(c => c.id === selectedChar)
+        if (cached?.extensions?.char_rewriter?.variants) {
+          cached.extensions.char_rewriter.variants[payload.category] = payload.variants
+        }
+
+        if (payload.category === selectedCategory) {
+          categoryVariants = payload.variants || []
+          selectedVersionKey = 'live'
+          currentTextInput.update({ value: originalTextRaw })
+          renderVariantsDropdown()
+        }
+      }
+      return
+    }
+
+    if (payload.type === 'version_applied') {
+      if (payload.characterId === selectedChar) {
+        const appliedText = payload.text ?? currentTextInput.getValue()
+        const cached = fullCharList.find(c => c.id === selectedChar)
+
+        if (cached) {
+          if (payload.category.startsWith('alt_greeting_')) {
+            const idx = parseInt(payload.category.replace('alt_greeting_', ''), 10)
+            if (!cached.alternate_greetings) cached.alternate_greetings = []
+            cached.alternate_greetings[idx] = appliedText
+          } else {
+            cached[payload.category] = appliedText
+          }
+        }
+
+        if (payload.category === selectedCategory) {
+          originalTextRaw = appliedText
+          selectedVersionKey = 'live'
+          renderVariantsDropdown()
+          currentTextInput.update({ value: originalTextRaw })
+        }
+      }
+      return
     }
 
     if (payload.type === 'generate_token') {
       streamedText += payload.token
-      resultInput.value = streamedText
+      resultInput.update({ value: streamedText })
     }
 
     if (payload.type === 'generate_done') {
       isGenerating = false
       generateBtn.textContent = 'Rewrite with AI'
       generateBtn.disabled = false
-      resultInput.value = payload.result || streamedText
+      resultInput.update({ value: payload.result })
       saveResultBtn.style.display = 'block'
     }
 
@@ -521,13 +484,14 @@ export function setup(ctx: SpindleFrontendContext) {
     setTimeout(() => {
       if (seq === statusRequestSeq) {
         permissionWarning.style.display = 'block'
-        permissionWarning.innerHTML = `<strong>Backend didn't respond.</strong> AI rewriting may be unavailable — try reopening this tab.`
+        permissionWarning.innerHTML = `<strong>Backend didn't respond.</strong> AI rewriting and saved instructions may be unavailable — try reopening this tab.`
       }
     }, WATCHDOG_MS)
   }
 
   async function loadEverything() {
-    charSelect.innerHTML = '<option value="">Loading characters...</option>'
+    charSelect.update({ placeholder: "Loading characters...", options: [{ value: '', label: 'Loading characters...' }] })
+
     requestStatus()
 
     try {
@@ -544,41 +508,27 @@ export function setup(ctx: SpindleFrontendContext) {
       fullCharList = chars
       selectedChar = activeId || (chars[0]?.id ?? '')
 
-      charSelect.innerHTML = ''
-      if (chars.length === 0) {
-        charSelect.innerHTML = '<option value="">No characters found</option>'
-      } else {
-        chars.forEach((c: any) => {
-          const opt = document.createElement('option')
-          opt.value = c.id
-          opt.textContent = c.name
-          if (c.id === selectedChar) opt.selected = true
-          charSelect.appendChild(opt)
-        })
-      }
+      charSelect.update({
+        value: selectedChar, placeholder: "Select Character", searchPlaceholder: "Search...",
+        options: chars.map((c: any) => ({
+          value: c.id, label: c.name, leading: c.image_id ? { type: 'image', src: `/api/v1/images/${c.image_id}?size=sm` } : undefined
+        }))
+      })
 
       updateCategoryOptions()
-      if (selectedChar) await loadCurrentText()
+      if (selectedChar) loadCurrentText()
     } catch (err: any) {
-      charSelect.innerHTML = '<option value="">Error loading characters</option>'
-      currentTextInput.value = `Couldn't load characters: ${err?.message || err}`
+      charSelect.update({ placeholder: "Error loading characters", options: [] })
+      currentTextInput.update({ value: `Couldn't load characters: ${err?.message || err}` })
     }
   }
 
-  tab.onActivate(() => {
-    loadEverything().catch(console.error)
-  })
-
-  loadEverything().catch(console.error)
+  loadEverything()
 
   return () => {
-    try {
-      tab?.destroy?.()
-      unsubPermissions?.()
-    } catch {
-      // Cleanup safety
-    }
+    tab.destroy()
+    unsubPermissions()
+    unsubTabActivate()
+    activeMounts.forEach(m => m?.destroy?.())
   }
 }
-
-export default setup
