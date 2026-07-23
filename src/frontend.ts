@@ -1,455 +1,550 @@
 import type { SpindleFrontendContext } from 'lumiverse-spindle-types'
 
-export function setup(ctx: SpindleFrontendContext) {
-  // 1. Inject Styles
-  ctx.dom.injectStyle(`
-    .car-container {
-      display: flex;
-      flex-direction: column;
-      gap: 16px;
-      padding: 16px;
-      color: var(--lumiverse-text, #e2e8f0);
-      font-family: inherit;
-      max-width: 900px;
-      margin: 0 auto;
-    }
-    .car-card {
-      background: var(--lumiverse-bg-elevated, #1e293b);
-      border: 1px solid var(--lumiverse-border, rgba(255, 255, 255, 0.1));
-      border-radius: var(--lumiverse-radius, 8px);
-      padding: 16px;
-      display: flex;
-      flex-direction: column;
-      gap: 12px;
-    }
-    .car-title {
-      font-size: 13px;
-      font-weight: 600;
-      color: var(--lumiverse-text, #f8fafc);
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-    }
-    .car-row {
-      display: flex;
-      gap: 12px;
-      align-items: center;
-      flex-wrap: wrap;
-    }
-    .car-field-group {
-      display: flex;
-      flex-direction: column;
-      gap: 6px;
-      flex: 1;
-      min-width: 200px;
-    }
-    .car-label {
-      font-size: 12px;
-      color: var(--lumiverse-text-muted, #94a3b8);
-      font-weight: 500;
-    }
-    .car-select, .car-input, .car-textarea {
-      background: var(--lumiverse-fill, #0f172a);
-      border: 1px solid var(--lumiverse-border, rgba(255, 255, 255, 0.15));
-      border-radius: var(--lumiverse-radius, 6px);
-      color: var(--lumiverse-text, #f1f5f9);
-      padding: 8px 12px;
-      font-size: 13px;
-      outline: none;
-      width: 100%;
-      box-sizing: border-box;
-    }
-    .car-textarea {
-      min-height: 100px;
-      resize: vertical;
-      font-family: monospace;
-      line-height: 1.4;
-    }
-    .car-btn {
-      background: var(--lumiverse-primary, #3b82f6);
-      color: #ffffff;
-      border: none;
-      border-radius: var(--lumiverse-radius, 6px);
-      padding: 8px 16px;
-      font-size: 13px;
-      font-weight: 500;
-      cursor: pointer;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      gap: 6px;
-      transition: opacity 0.2s;
-    }
-    .car-btn:hover { opacity: 0.9; }
-    .car-btn:disabled { opacity: 0.5; cursor: not-allowed; }
-    .car-btn-secondary {
-      background: rgba(255, 255, 255, 0.08);
-      color: var(--lumiverse-text, #e2e8f0);
-      border: 1px solid var(--lumiverse-border, rgba(255, 255, 255, 0.15));
-    }
-    .car-btn-success { background: #10b981; }
-    .car-btn-danger { background: #ef4444; }
-    .car-version-item {
-      background: var(--lumiverse-fill, #0f172a);
-      border: 1px solid var(--lumiverse-border, rgba(255, 255, 255, 0.1));
-      border-radius: var(--lumiverse-radius, 6px);
-      padding: 12px;
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-    }
-    .car-badge {
-      font-size: 10px;
-      background: rgba(59, 130, 246, 0.2);
-      color: #60a5fa;
-      padding: 2px 6px;
-      border-radius: 4px;
-      align-self: flex-start;
-    }
-    .car-status {
-      font-size: 12px;
-      padding: 8px 12px;
-      border-radius: 6px;
-      display: none;
-    }
-    .car-status.error { background: rgba(239, 68, 68, 0.15); color: #fca5a5; display: block; }
-    .car-status.info { background: rgba(59, 130, 246, 0.15); color: #93c5fd; display: block; }
-  `)
-
-  // Function to build UI inside any mount point (Drawer or Modal)
-  function createRewriterUI(targetRoot: HTMLElement) {
-    targetRoot.innerHTML = `
-      <div class="car-container">
-        <div class="car-status"></div>
-
-        <div class="car-card">
-          <div class="car-title">1. Select Character & Field</div>
-          <div class="car-row">
-            <div class="car-field-group">
-              <label class="car-label">Character Card</label>
-              <select class="car-char-select car-select">
-                <option value="">Loading characters...</option>
-              </select>
-            </div>
-            <div class="car-field-group">
-              <label class="car-label">Field / Characteristic</label>
-              <select class="car-field-select car-select">
-                <option value="description">Description</option>
-                <option value="personality">Personality</option>
-                <option value="first_mes">Main Greeting (first_mes)</option>
-                <option value="scenario">Scenario</option>
-                <option value="post_history_instructions">Post-History Instructions</option>
-                <option value="alternate_greetings">Alternate Greetings</option>
-              </select>
-            </div>
-          </div>
-
-          <div class="car-field-group">
-            <label class="car-label">Current Content</label>
-            <textarea class="car-original-text car-textarea" readonly placeholder="Select a character card to view field content..."></textarea>
-          </div>
-        </div>
-
-        <div class="car-card">
-          <div class="car-title">2. AI Prompt</div>
-          <div class="car-row">
-            <div class="car-field-group">
-              <label class="car-label">Saved Prompt Template</label>
-              <div class="car-row">
-                <select class="car-prompt-select car-select" style="flex: 1;">
-                  <option value="">-- Custom Prompt --</option>
-                </select>
-                <button class="car-btn-del-prompt car-btn car-btn-danger" title="Delete Saved Prompt" style="display:none; padding: 6px 10px;">✕</button>
-              </div>
-            </div>
-          </div>
-
-          <div class="car-field-group">
-            <label class="car-label">Instruction for AI</label>
-            <textarea class="car-prompt-text car-textarea" placeholder="e.g. Rewrite this description to be more dramatic and detailed..."></textarea>
-          </div>
-
-          <div class="car-row">
-            <button class="car-btn-generate car-btn">
-              <span>✨ Generate AI Rewrite</span>
-            </button>
-            <button class="car-btn-save-prompt car-btn car-btn-secondary">
-              <span>💾 Save Prompt Template</span>
-            </button>
-          </div>
-        </div>
-
-        <div class="car-card car-result-card" style="display: none;">
-          <div class="car-title">3. Generated Output</div>
-          <div class="car-field-group">
-            <textarea class="car-result-text car-textarea" style="min-height: 130px;"></textarea>
-          </div>
-          <div class="car-row">
-            <button class="car-btn-save-ver car-btn car-btn-secondary">
-              📌 Save as New Version
-            </button>
-            <button class="car-btn-apply-card car-btn car-btn-success">
-              ⚡ Apply directly to Card
-            </button>
-          </div>
-        </div>
-
-        <div class="car-card">
-          <div class="car-title">4. Saved Versions History</div>
-          <div class="car-versions-list" style="display: flex; flex-direction: column; gap: 10px;">
-            <div style="font-size: 12px; color: var(--lumiverse-text-muted);">No saved versions for this field yet.</div>
-          </div>
-        </div>
-      </div>
-    `
-
-    // State
-    let characters: any[] = []
-    let savedPrompts: any[] = []
-    let savedVersions: any[] = []
-    let currentCharacter: any = null
-
-    // Handles
-    const statusEl = targetRoot.querySelector('.car-status') as HTMLElement
-    const charSelect = targetRoot.querySelector('.car-char-select') as HTMLSelectElement
-    const fieldSelect = targetRoot.querySelector('.car-field-select') as HTMLSelectElement
-    const originalText = targetRoot.querySelector('.car-original-text') as HTMLTextAreaElement
-    const promptSelect = targetRoot.querySelector('.car-prompt-select') as HTMLSelectElement
-    const promptText = targetRoot.querySelector('.car-prompt-text') as HTMLTextAreaElement
-    const btnDelPrompt = targetRoot.querySelector('.car-btn-del-prompt') as HTMLButtonElement
-    const btnGenerate = targetRoot.querySelector('.car-btn-generate') as HTMLButtonElement
-    const btnSavePrompt = targetRoot.querySelector('.car-btn-save-prompt') as HTMLButtonElement
-    const resultCard = targetRoot.querySelector('.car-result-card') as HTMLElement
-    const resultText = targetRoot.querySelector('.car-result-text') as HTMLTextAreaElement
-    const btnSaveVer = targetRoot.querySelector('.car-btn-save-ver') as HTMLButtonElement
-    const btnApplyCard = targetRoot.querySelector('.car-btn-apply-card') as HTMLButtonElement
-    const versionsList = targetRoot.querySelector('.car-versions-list') as HTMLElement
-
-    function showStatus(msg: string, type: 'info' | 'error' = 'info') {
-      statusEl.className = `car-status ${type}`
-      statusEl.textContent = msg
-      if (type === 'info') setTimeout(() => { statusEl.style.display = 'none' }, 4000)
-    }
-
-    function updateOriginalField() {
-      if (!currentCharacter) {
-        originalText.value = ''
-        return
-      }
-      const field = fieldSelect.value
-      const val = currentCharacter[field]
-      if (Array.isArray(val)) {
-        originalText.value = val.join('\n\n---\n\n')
-      } else {
-        originalText.value = val || ''
-      }
-      renderVersions()
-    }
-
-    function renderVersions() {
-      if (!currentCharacter) {
-        versionsList.innerHTML = '<div style="font-size:12px;color:var(--lumiverse-text-muted);">Select a character above.</div>'
-        return
-      }
-      const field = fieldSelect.value
-      const charVersions = savedVersions.filter((v) => v.characterId === currentCharacter.id && v.field === field)
-
-      if (charVersions.length === 0) {
-        versionsList.innerHTML = `<div style="font-size:12px;color:var(--lumiverse-text-muted);">No saved versions for this field yet.</div>`
-        return
-      }
-
-      versionsList.innerHTML = ''
-      charVersions.forEach((ver) => {
-        const item = document.createElement('div')
-        item.className = 'car-version-item'
-        const dateStr = new Date(ver.createdAt).toLocaleString()
-
-        item.innerHTML = `
-          <div class="car-row" style="justify-content: space-between;">
-            <span class="car-badge">${dateStr}</span>
-            <div style="display:flex; gap:6px;">
-              <button class="car-btn car-btn-secondary car-ver-apply" style="padding: 4px 8px; font-size: 11px;">Apply to Card</button>
-              <button class="car-btn car-btn-danger car-ver-del" style="padding: 4px 8px; font-size: 11px;">Delete</button>
-            </div>
-          </div>
-          <div style="font-size:11px; color: var(--lumiverse-text-muted);">Prompt: ${ver.promptUsed}</div>
-          <textarea class="car-textarea" style="min-height:70px;" readonly>${ver.text}</textarea>
-        `
-
-        item.querySelector('.car-ver-apply')?.addEventListener('click', () => {
-          ctx.sendToBackend({
-            type: 'apply_to_card',
-            characterId: ver.characterId,
-            field: ver.field,
-            newText: ver.text,
-          })
-        })
-
-        item.querySelector('.car-ver-del')?.addEventListener('click', () => {
-          ctx.sendToBackend({ type: 'delete_version', id: ver.id })
-        })
-
-        versionsList.appendChild(item)
-      })
-    }
-
-    function renderPromptsDropdown() {
-      promptSelect.innerHTML = '<option value="">-- Custom Prompt --</option>'
-      savedPrompts.forEach((p) => {
-        const opt = document.createElement('option')
-        opt.value = p.id
-        opt.textContent = p.title
-        promptSelect.appendChild(opt)
-      })
-    }
-
-    charSelect.addEventListener('change', () => {
-      const charId = charSelect.value
-      currentCharacter = characters.find((c) => c.id === charId) || null
-      updateOriginalField()
-    })
-
-    fieldSelect.addEventListener('change', () => updateOriginalField())
-
-    promptSelect.addEventListener('change', () => {
-      const found = savedPrompts.find((p) => p.id === promptSelect.value)
-      if (found) {
-        promptText.value = found.prompt
-        btnDelPrompt.style.display = 'inline-flex'
-      } else {
-        btnDelPrompt.style.display = 'none'
-      }
-    })
-
-    btnDelPrompt.addEventListener('click', () => {
-      if (promptSelect.value) ctx.sendToBackend({ type: 'delete_prompt_template', id: promptSelect.value })
-    })
-
-    btnSavePrompt.addEventListener('click', () => {
-      const val = promptText.value.trim()
-      if (!val) return showStatus('Please write a prompt first.', 'error')
-      const title = prompt('Name for this prompt template:')
-      if (title) ctx.sendToBackend({ type: 'save_prompt_template', title, prompt: val })
-    })
-
-    btnGenerate.addEventListener('click', () => {
-      if (!currentCharacter) return showStatus('Please select a character card first.', 'error')
-      const instructions = promptText.value.trim()
-      if (!instructions) return showStatus('Please enter instructions for the AI.', 'error')
-
-      btnGenerate.disabled = true
-      btnGenerate.textContent = '⏳ Generating with AI...'
-      resultCard.style.display = 'none'
-
-      ctx.sendToBackend({
-        type: 'generate_rewrite',
-        characterName: currentCharacter.name,
-        fieldLabel: fieldSelect.options[fieldSelect.selectedIndex].text,
-        currentValue: originalText.value,
-        instructions,
-      })
-    })
-
-    btnSaveVer.addEventListener('click', () => {
-      if (!currentCharacter || !resultText.value) return
-      ctx.sendToBackend({
-        type: 'save_version',
-        characterId: currentCharacter.id,
-        field: fieldSelect.value,
-        text: resultText.value,
-        promptUsed: promptText.value.trim(),
-      })
-      showStatus('Version saved to history!', 'info')
-    })
-
-    btnApplyCard.addEventListener('click', () => {
-      if (!currentCharacter || !resultText.value) return
-      ctx.sendToBackend({
-        type: 'apply_to_card',
-        characterId: currentCharacter.id,
-        field: fieldSelect.value,
-        newText: resultText.value,
-      })
-    })
-
-    ctx.onBackendMessage((msg: any) => {
-      switch (msg.type) {
-        case 'characters_list': {
-          characters = msg.characters || []
-          charSelect.innerHTML = '<option value="">Select a character...</option>'
-          characters.forEach((c) => {
-            const opt = document.createElement('option')
-            opt.value = c.id
-            opt.textContent = c.name
-            charSelect.appendChild(opt)
-          })
-          break
-        }
-        case 'initial_data': {
-          savedPrompts = msg.prompts || []
-          savedVersions = msg.versions || []
-          renderPromptsDropdown()
-          renderVersions()
-          break
-        }
-        case 'prompts_updated': {
-          savedPrompts = msg.prompts || []
-          renderPromptsDropdown()
-          promptSelect.value = ''
-          btnDelPrompt.style.display = 'none'
-          showStatus('Prompts updated successfully!', 'info')
-          break
-        }
-        case 'versions_updated': {
-          savedVersions = msg.versions || []
-          renderVersions()
-          break
-        }
-        case 'rewrite_generated': {
-          btnGenerate.disabled = false
-          btnGenerate.textContent = '✨ Generate AI Rewrite'
-          resultText.value = msg.text
-          resultCard.style.display = 'flex'
-          showStatus('AI rewrite generated!', 'info')
-          break
-        }
-        case 'card_applied_success': {
-          characters = msg.characters || []
-          if (currentCharacter) currentCharacter = characters.find((c) => c.id === currentCharacter.id) || null
-          updateOriginalField()
-          showStatus(`Character card updated!`, 'info')
-          break
-        }
-        case 'error': {
-          btnGenerate.disabled = false
-          btnGenerate.textContent = '✨ Generate AI Rewrite'
-          showStatus(msg.message, 'error')
-          break
-        }
-      }
-    })
-
-    ctx.sendToBackend({ type: 'get_characters' })
-    ctx.sendToBackend({ type: 'get_initial_data' })
+// REST Helper to interact directly with Lumiverse session API
+async function apiFetch(path: string, options: RequestInit = {}) {
+  const res = await fetch(path, {
+    credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
+    ...options
+  })
+  const text = await res.text()
+  let body: any = null
+  if (text) {
+    try { body = JSON.parse(text) } catch { body = text }
   }
-
-  // 1. Register in Viewport Drawer Sidebar
-  const drawerTab = ctx.ui.registerDrawerTab({
-    id: 'character-ai-rewriter',
-    title: 'AI Character Rewriter',
-    shortName: 'Rewriter',
-    headerTitle: 'AI Character Rewriter',
-    description: 'Rewrite character card fields with custom AI prompts and version history',
-    iconSvg: `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>`,
-  })
-  createRewriterUI(drawerTab.root)
-
-  // 2. Register directly inside native Character Editor modal (for instant access)
-  const editorTab = ctx.ui.registerCharacterEditorTab({
-    id: 'ai-rewriter-tab',
-    title: 'AI Rewriter',
-  })
-  createRewriterUI(editorTab.root)
+  if (!res.ok) {
+    const detail = (body && typeof body === 'object' && body.error) ? body.error : (typeof body === 'string' && body ? body : res.statusText)
+    throw new Error(`${res.status} ${detail}`)
+  }
+  return body
 }
 
-export default setup
+async function fetchAllCharactersFromApi(): Promise<any[]> {
+  const byId = new Map<string, any>()
+  let offset = 0
+  const limit = 200
+  let page = 1
+  const MAX_PAGES = 100
+
+  while (page <= MAX_PAGES) {
+    const result = await apiFetch(`/api/v1/characters?limit=${limit}&offset=${offset}&page=${page}`)
+    const data = Array.isArray(result) ? result : (result?.data ?? [])
+    const total = Array.isArray(result) ? undefined : result?.total
+
+    if (!data.length) break
+
+    const beforeCount = byId.size
+    for (const c of data) byId.set(c.id, c)
+    const newCount = byId.size - beforeCount
+
+    if (newCount === 0) break
+    if (data.length < limit || (typeof total === 'number' && byId.size >= total)) break
+
+    offset += limit
+    page += 1
+  }
+
+  return Array.from(byId.values())
+}
+
+async function resolveActiveCharId(routeType: string | null, routeId: string | null): Promise<string | null> {
+  if (routeType === 'characters' && routeId) return routeId
+
+  if (routeType === 'chat' && routeId) {
+    try {
+      const chat = await apiFetch(`/api/v1/chats/${routeId}`)
+      if (chat?.character_id) return chat.character_id
+    } catch {
+      // Non-fatal fallback
+    }
+  }
+
+  try {
+    const activeChat = await apiFetch('/api/v1/chats/active')
+    if (activeChat?.character_id) return activeChat.character_id
+  } catch {
+    // Non-fatal fallback
+  }
+
+  return null
+}
+
+export function setup(ctx: SpindleFrontendContext) {
+  // 1. Register Drawer Tab with exact viewBox SVG and shortName
+  const tab = ctx.ui.registerDrawerTab({
+    id: 'ai-rewriter',
+    title: 'AI Character Rewriter',
+    shortName: 'Rewrite',
+    iconSvg: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>'
+  })
+
+  // 2. Tab activation event listener
+  const unsubTabActivate = tab.onActivate(() => {
+    loadEverything()
+  })
+
+  // Permission warning element
+  const permissionWarning = document.createElement('div')
+  permissionWarning.style.cssText = 'display:none; padding:16px; margin:16px; background:rgba(239,68,68,0.1); border:1px solid rgba(239,68,68,0.25); border-radius:var(--lumiverse-radius, 8px); color:var(--lumiverse-danger, #ef4444); font-size:13px; line-height:1.5;'
+  tab.root.appendChild(permissionWarning)
+
+  // Main Container
+  const container = document.createElement('div')
+  container.style.cssText = 'display:flex;flex-direction:column;gap:16px;padding:16px;'
+  tab.root.appendChild(container)
+
+  // State Variables
+  let selectedChar = ''
+  let selectedCategory = 'description'
+  let currentPrompts: any = {}
+  let fullCharList: any[] = []
+  let hasGeneration = true
+
+  let originalTextRaw = ''
+  let categoryVariants: string[] = []
+  let selectedVersionKey = 'live'
+
+  const activeMounts: any[] = []
+  const WATCHDOG_MS = 15000
+  let statusRequestSeq = 0
+
+  // --- 1. CHARACTER SELECTOR ---
+  const charSlot = document.createElement('div')
+  container.appendChild(charSlot)
+  const charSelect = ctx.components.mountSelect(charSlot, {
+    value: '',
+    placeholder: 'Loading characters...',
+    options: [{ value: '', label: 'Loading characters...' }],
+    onChange: (v) => {
+      selectedChar = v
+      updateCategoryOptions()
+      loadCurrentText()
+    }
+  })
+  activeMounts.push(charSelect)
+
+  // --- 2. CATEGORY / CHARACTERISTIC SELECTOR ---
+  const catSlot = document.createElement('div')
+  container.appendChild(catSlot)
+  const catSelect = ctx.components.mountSelect(catSlot, {
+    value: selectedCategory,
+    placeholder: 'Select Characteristic Field',
+    options: [
+      { value: 'description', label: 'Description' },
+      { value: 'personality', label: 'Personality' },
+      { value: 'scenario', label: 'Scenario' },
+      { value: 'first_mes', label: 'Main Greeting' }
+    ],
+    onChange: (v) => {
+      selectedCategory = v
+      loadCurrentText()
+    }
+  })
+  activeMounts.push(catSelect)
+
+  function updateCategoryOptions() {
+    const char = fullCharList.find(c => c.id === selectedChar)
+    const options = [
+      { value: 'description', label: 'Description' },
+      { value: 'personality', label: 'Personality' },
+      { value: 'scenario', label: 'Scenario' },
+      { value: 'mes_example', label: 'Example Messages' },
+      { value: 'first_mes', label: 'Main Greeting' }
+    ]
+
+    if (char && char.alternate_greetings && char.alternate_greetings.length > 0) {
+      char.alternate_greetings.forEach((_: any, idx: number) => {
+        options.push({ value: `alt_greeting_${idx}`, label: `Alt Greeting ${idx + 1}` })
+      })
+    }
+
+    if (!options.find(o => o.value === selectedCategory)) selectedCategory = 'description'
+    catSelect.update({ options, value: selectedCategory })
+  }
+
+  // --- 3. PROMPTS & INSTRUCTIONS CONFIGURATION ---
+  const promptSlot = document.createElement('div')
+  container.appendChild(promptSlot)
+  const promptSection = ctx.components.mountCollapsibleSection(promptSlot, {
+    title: 'AI Instructions / Prompts',
+    defaultExpanded: true
+  })
+  const basePromptInput = ctx.components.mountTextArea(promptSection.body, {
+    value: '',
+    rows: 3,
+    placeholder: 'Instructions for AI rewrite (e.g. Expand description with dramatic details...)',
+    onChange: (v) => { currentPrompts.base = v }
+  })
+  activeMounts.push(basePromptInput)
+
+  const savePromptsBtn = document.createElement('button')
+  savePromptsBtn.textContent = 'Save Instruction Template'
+  savePromptsBtn.className = 'btn'
+  savePromptsBtn.style.cssText = 'margin-top:8px; padding:6px 12px; cursor:pointer;'
+  savePromptsBtn.onclick = () => ctx.sendToBackend({ type: 'save_prompts', prompts: currentPrompts })
+  promptSection.body.appendChild(savePromptsBtn)
+
+  // --- 4. CURRENT FIELD VIEWER & VERSION SELECTOR ---
+  const currentTextLabel = document.createElement('div')
+  currentTextLabel.style.cssText = 'font-weight: 500; font-size: 13px; color: var(--lumiverse-text-dim, #94a3b8); margin-bottom: -8px;'
+  currentTextLabel.textContent = 'Current Text / Version History:'
+  container.appendChild(currentTextLabel)
+
+  const variantSelectSlot = document.createElement('div')
+  variantSelectSlot.style.display = 'none'
+  container.appendChild(variantSelectSlot)
+
+  const variantSelect = ctx.components.mountSelect(variantSelectSlot, {
+    value: 'live',
+    placeholder: 'Select Version',
+    options: [{ value: 'live', label: 'Live Card Text' }],
+    onChange: (v) => {
+      selectedVersionKey = v
+      if (v === 'live') {
+        currentTextInput.update({ value: originalTextRaw })
+        deleteVersionBtn.style.display = 'none'
+      } else {
+        const idx = parseInt(v, 10)
+        currentTextInput.update({ value: categoryVariants[idx] || '' })
+        deleteVersionBtn.style.display = 'block'
+      }
+    }
+  })
+  activeMounts.push(variantSelect)
+
+  const currentTextSlot = document.createElement('div')
+  container.appendChild(currentTextSlot)
+  const currentTextInput = ctx.components.mountTextArea(currentTextSlot, {
+    value: '',
+    rows: 5,
+    placeholder: 'Select a character card above...'
+  })
+  activeMounts.push(currentTextInput)
+
+  const currentActionsRow = document.createElement('div')
+  currentActionsRow.style.cssText = 'display:flex;gap:8px;margin-top:-8px;'
+  container.appendChild(currentActionsRow)
+
+  const saveCurrentBtn = document.createElement('button')
+  saveCurrentBtn.textContent = 'Save Current as Version'
+  saveCurrentBtn.className = 'btn'
+  saveCurrentBtn.style.cssText = 'flex:1; padding:8px;'
+  saveCurrentBtn.onclick = () => saveVersion(currentTextInput.getValue())
+  currentActionsRow.appendChild(saveCurrentBtn)
+
+  const applyBtn = document.createElement('button')
+  applyBtn.textContent = 'Apply Selected to Card'
+  applyBtn.className = 'btn'
+  applyBtn.style.cssText = 'background: var(--lumiverse-success, #10b981); color: white; flex:1; padding:8px;'
+  applyBtn.onclick = () => applyVersion(currentTextInput.getValue())
+  currentActionsRow.appendChild(applyBtn)
+
+  const deleteVersionBtn = document.createElement('button')
+  deleteVersionBtn.textContent = 'Delete Version'
+  deleteVersionBtn.className = 'btn'
+  deleteVersionBtn.style.cssText = 'background: var(--lumiverse-danger, #ef4444); color: white; margin-top:-8px; display:none; padding:6px 12px;'
+  deleteVersionBtn.onclick = () => {
+    if (selectedVersionKey !== 'live') deleteVersion(parseInt(selectedVersionKey, 10))
+  }
+  container.appendChild(deleteVersionBtn)
+
+  // --- 5. AI GENERATOR & REWRITE BOX ---
+  const aiDivider = document.createElement('div')
+  aiDivider.style.cssText = 'border-top: 1px solid var(--lumiverse-border, rgba(255,255,255,0.1)); margin: 8px 0;'
+  container.appendChild(aiDivider)
+
+  let isGenerating = false
+  let streamedText = ''
+
+  const generateBtn = document.createElement('button')
+  generateBtn.textContent = 'Rewrite with AI'
+  generateBtn.className = 'btn'
+  generateBtn.style.cssText = 'background: var(--lumiverse-primary, #3b82f6); color: white; padding:10px;'
+  generateBtn.onclick = () => {
+    if (!selectedChar) return
+
+    if (isGenerating) {
+      generateBtn.disabled = true
+      generateBtn.textContent = 'Cancelling...'
+      ctx.sendToBackend({ type: 'generate_cancel' })
+      return
+    }
+
+    isGenerating = true
+    streamedText = ''
+    resultInput.update({ value: '' })
+    saveResultBtn.style.display = 'none'
+    generateBtn.textContent = 'Stop Generating'
+    ctx.sendToBackend({
+      type: 'generate',
+      characterId: selectedChar,
+      category: selectedCategory,
+      originalText: currentTextInput.getValue(),
+      customPrompt: basePromptInput.getValue()
+    })
+  }
+  container.appendChild(generateBtn)
+
+  const resultSlot = document.createElement('div')
+  container.appendChild(resultSlot)
+  const resultInput = ctx.components.mountTextArea(resultSlot, {
+    value: '',
+    rows: 5,
+    placeholder: 'AI suggestion will appear here...'
+  })
+  activeMounts.push(resultInput)
+
+  const saveResultBtn = document.createElement('button')
+  saveResultBtn.textContent = 'Save AI Result as Version'
+  saveResultBtn.className = 'btn'
+  saveResultBtn.style.cssText = 'display: none; padding:8px;'
+  saveResultBtn.onclick = () => saveVersion(resultInput.getValue())
+  container.appendChild(saveResultBtn)
+
+  // --- LOCAL DATA HELPERS ---
+  function loadCurrentText() {
+    const char = fullCharList.find(c => c.id === selectedChar)
+    if (!char) {
+      currentTextInput.update({ value: 'Select a character card above...' })
+      variantSelectSlot.style.display = 'none'
+      deleteVersionBtn.style.display = 'none'
+      return
+    }
+
+    let text = ''
+    if (selectedCategory.startsWith('alt_greeting_')) {
+      const idx = parseInt(selectedCategory.replace('alt_greeting_', ''), 10)
+      text = (char.alternate_greetings || [])[idx] || ''
+    } else {
+      text = char[selectedCategory] || ''
+    }
+
+    const extData = char.extensions?.['char_rewriter'] || {}
+    categoryVariants = extData.variants?.[selectedCategory] || []
+    originalTextRaw = text
+    selectedVersionKey = 'live'
+
+    currentTextInput.update({ value: originalTextRaw })
+    resultInput.update({ value: '' })
+    saveResultBtn.style.display = 'none'
+
+    renderVariantsDropdown()
+  }
+
+  function renderVariantsDropdown() {
+    const variantOptions = [{ value: 'live', label: 'Live Card Text' }]
+    categoryVariants.forEach((_, i) => {
+      variantOptions.push({ value: i.toString(), label: `Saved Version ${i + 1}` })
+    })
+
+    variantSelectSlot.style.display = 'block'
+    variantSelect.update({ options: variantOptions, value: selectedVersionKey })
+    deleteVersionBtn.style.display = selectedVersionKey === 'live' ? 'none' : 'block'
+  }
+
+  // --- REST WRITE OPERATIONS ---
+  async function withCurrentCharacter(work: (char: any) => Promise<any> | any): Promise<void> {
+    try {
+      let char = fullCharList.find(c => c.id === selectedChar)
+      if (!char) {
+        char = await apiFetch(`/api/v1/characters/${selectedChar}`)
+        if (!char) throw new Error('Character not found')
+      }
+      await work(char)
+    } catch (err: any) {
+      alert(`Action failed: ${err?.message || err}`)
+    }
+  }
+
+  async function saveVersion(text: string) {
+    await withCurrentCharacter(async (char) => {
+      const extData = char.extensions?.['char_rewriter'] || { variants: {} }
+      if (!extData.variants) extData.variants = {}
+      if (!extData.variants[selectedCategory]) extData.variants[selectedCategory] = []
+
+      const list = extData.variants[selectedCategory]
+      if (list.length === 0 || list[list.length - 1] !== text) {
+        list.push(text)
+        await apiFetch(`/api/v1/characters/${selectedChar}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ extensions: { ...char.extensions, char_rewriter: extData } })
+        })
+      }
+
+      const cached = fullCharList.find(c => c.id === selectedChar)
+      if (cached) cached.extensions = { ...cached.extensions, char_rewriter: extData }
+
+      categoryVariants = extData.variants[selectedCategory]
+      selectedVersionKey = categoryVariants.length > 0 ? (categoryVariants.length - 1).toString() : 'live'
+      currentTextInput.update({ value: categoryVariants.length > 0 ? categoryVariants[categoryVariants.length - 1] : originalTextRaw })
+      resultInput.update({ value: '' })
+      saveResultBtn.style.display = 'none'
+      renderVariantsDropdown()
+    })
+  }
+
+  async function deleteVersion(index: number) {
+    await withCurrentCharacter(async (char) => {
+      const extData = char.extensions?.['char_rewriter'] || { variants: {} }
+      if (extData.variants?.[selectedCategory]) {
+        extData.variants[selectedCategory].splice(index, 1)
+        await apiFetch(`/api/v1/characters/${selectedChar}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ extensions: { ...char.extensions, char_rewriter: extData } })
+        })
+      }
+
+      const cached = fullCharList.find(c => c.id === selectedChar)
+      if (cached) cached.extensions = { ...cached.extensions, char_rewriter: extData }
+
+      categoryVariants = extData.variants?.[selectedCategory] || []
+      selectedVersionKey = 'live'
+      currentTextInput.update({ value: originalTextRaw })
+      renderVariantsDropdown()
+    })
+  }
+
+  async function applyVersion(text: string) {
+    await withCurrentCharacter(async (char) => {
+      let updatePayload: any = {}
+      if (selectedCategory.startsWith('alt_greeting_')) {
+        const altGreetings = [...(char.alternate_greetings || [])]
+        const idx = parseInt(selectedCategory.replace('alt_greeting_', ''), 10)
+        altGreetings[idx] = text
+        updatePayload = { alternate_greetings: altGreetings }
+      } else {
+        updatePayload = { [selectedCategory]: text }
+      }
+
+      await apiFetch(`/api/v1/characters/${selectedChar}`, {
+        method: 'PATCH',
+        body: JSON.stringify(updatePayload)
+      })
+
+      const cached = fullCharList.find(c => c.id === selectedChar)
+      if (cached) Object.assign(cached, updatePayload)
+
+      originalTextRaw = text
+      selectedVersionKey = 'live'
+      renderVariantsDropdown()
+      currentTextInput.update({ value: originalTextRaw })
+    })
+  }
+
+  // --- EVENT LISTENERS ---
+  const unsubPermissions = ctx.events.on('PERMISSION_CHANGED', () => { loadEverything() })
+
+  ctx.onBackendMessage((payload: any) => {
+    if (payload.type === 'status_result') {
+      statusRequestSeq++
+      hasGeneration = payload.hasGeneration
+      currentPrompts = payload.prompts
+      basePromptInput.update({ value: currentPrompts.base })
+      generateBtn.style.display = hasGeneration ? 'block' : 'none'
+      if (!hasGeneration) {
+        permissionWarning.style.display = 'block'
+        permissionWarning.innerHTML = `<strong>Generation permission not granted.</strong> AI rewriting is disabled until it's enabled in the extension's permissions.`
+      } else {
+        permissionWarning.style.display = 'none'
+      }
+      return
+    }
+
+    if (payload.type === 'status_error') {
+      statusRequestSeq++
+      permissionWarning.style.display = 'block'
+      permissionWarning.innerHTML = `<strong>Backend error:</strong> ${payload.error}`
+      return
+    }
+
+    if (payload.type === 'prompts_updated') {
+      currentPrompts = payload.prompts
+      basePromptInput.update({ value: currentPrompts.base })
+    }
+
+    if (payload.type === 'generate_token') {
+      streamedText += payload.token
+      resultInput.update({ value: streamedText })
+    }
+
+    if (payload.type === 'generate_done') {
+      isGenerating = false
+      generateBtn.textContent = 'Rewrite with AI'
+      generateBtn.disabled = false
+      resultInput.update({ value: payload.result })
+      saveResultBtn.style.display = 'block'
+    }
+
+    if (payload.type === 'generate_cancelled') {
+      isGenerating = false
+      generateBtn.textContent = 'Rewrite with AI'
+      generateBtn.disabled = false
+      if (streamedText) saveResultBtn.style.display = 'block'
+    }
+
+    if (payload.type === 'generate_failed') {
+      isGenerating = false
+      generateBtn.textContent = 'Rewrite with AI'
+      generateBtn.disabled = false
+    }
+  })
+
+  function requestStatus() {
+    const seq = ++statusRequestSeq
+    ctx.sendToBackend({ type: 'get_status' })
+    setTimeout(() => {
+      if (seq === statusRequestSeq) {
+        permissionWarning.style.display = 'block'
+        permissionWarning.innerHTML = `<strong>Backend didn't respond.</strong> AI rewriting and saved instructions may be unavailable — try reopening this tab.`
+      }
+    }, WATCHDOG_MS)
+  }
+
+  async function loadEverything() {
+    charSelect.update({ placeholder: 'Loading characters...', options: [{ value: '', label: 'Loading characters...' }] })
+    requestStatus()
+
+    try {
+      const currentUrl = window.location.pathname + window.location.hash
+      const match = currentUrl.match(/\/(characters|chat)\/([a-zA-Z0-9_-]+)/)
+      const routeType = match ? match[1] : null
+      const routeId = match ? match[2] : null
+
+      const [chars, activeId] = await Promise.all([
+        fetchAllCharactersFromApi(),
+        resolveActiveCharId(routeType, routeId)
+      ])
+
+      fullCharList = chars
+      selectedChar = activeId || (chars[0]?.id ?? '')
+
+      charSelect.update({
+        value: selectedChar,
+        placeholder: 'Select Character',
+        searchPlaceholder: 'Search...',
+        options: chars.map((c: any) => ({
+          value: c.id,
+          label: c.name,
+          leading: c.image_id ? { type: 'image', src: `/api/v1/images/${c.image_id}?size=sm` } : undefined
+        }))
+      })
+
+      updateCategoryOptions()
+      if (selectedChar) loadCurrentText()
+    } catch (err: any) {
+      charSelect.update({ placeholder: 'Error loading characters', options: [] })
+      currentTextInput.update({ value: `Couldn't load characters: ${err?.message || err}` })
+    }
+  }
+
+  // Load initially
+  loadEverything()
+
+  // 3. MANDATORY TEARDOWN RETURN FUNCTION
+  return () => {
+    tab.destroy()
+    unsubPermissions()
+    unsubTabActivate()
+    activeMounts.forEach(m => m?.destroy?.())
+  }
+}
