@@ -11,9 +11,12 @@ const DEFAULT_PROMPTS = {
 
 const activeGenerations = new Map<string, AbortController>()
 
-/** Deep-clone and strip any `undefined` values (serde_v8 rejects them).
- *  `undefined` in objects → key is dropped.
- *  `undefined` in arrays → converted to `null` (use toStringArray() for string arrays). */
+/** Helper to conditionally return `{ userId }` options only if `userId` is a valid string. */
+function getOpts(userId?: string): { userId?: string } {
+  return typeof userId === 'string' && userId.length > 0 ? { userId } : {}
+}
+
+/** Deep-clone and strip any `undefined` values (serde_v8 rejects them). */
 function sanitize<T>(obj: T): T {
   try {
     return JSON.parse(JSON.stringify(obj ?? {}))
@@ -28,7 +31,7 @@ function toStringArray(arr: unknown): string[] {
   return arr.map((v) => (typeof v === 'string' ? v : ''))
 }
 
-spindle.onFrontendMessage(async (payload: any, userId: string) => {
+spindle.onFrontendMessage(async (payload: any, userId?: string) => {
   const sendError = (error: string) => {
     spindle.sendToFrontend({ type: 'error', error }, userId)
   }
@@ -41,7 +44,7 @@ spindle.onFrontendMessage(async (payload: any, userId: string) => {
       const hasGeneration = spindle.permissions.has('generation')
       const hasCharacters = spindle.permissions.has('characters')
       const hasChats      = spindle.permissions.has('chats')
-      const prompts = await spindle.userStorage.getJson('prompts.json', { fallback: DEFAULT_PROMPTS, userId })
+      const prompts = await spindle.userStorage.getJson('prompts.json', { fallback: DEFAULT_PROMPTS, ...getOpts(userId) })
       spindle.sendToFrontend({ type: 'status_result', hasGeneration, hasCharacters, hasChats, prompts }, userId)
     } catch (err: any) {
       spindle.log.error(`Status error: ${err?.message || err}`)
@@ -58,12 +61,12 @@ spindle.onFrontendMessage(async (payload: any, userId: string) => {
   // ------------------------------------------------------------------
   else if (payload.type === 'save_prompts') {
     try {
-      await spindle.userStorage.setJson('prompts.json', payload.prompts, { userId })
+      await spindle.userStorage.setJson('prompts.json', payload.prompts, getOpts(userId))
       spindle.toast.success("Instructions updated!")
       spindle.sendToFrontend({ type: 'prompts_updated', prompts: payload.prompts }, userId)
     } catch (err: any) {
-      spindle.log.error(`Save prompts error: ${err.message}`)
-      spindle.toast.error(`Failed to save instructions: ${err.message}`)
+      spindle.log.error(`Save prompts error: ${err?.message || err}`)
+      spindle.toast.error(`Failed to save instructions: ${err?.message || err}`)
     }
   }
 
@@ -81,7 +84,7 @@ spindle.onFrontendMessage(async (payload: any, userId: string) => {
       let offset = 0
       const limit = 200
       while (true) {
-        const { data, total } = await spindle.characters.list({ limit, offset, userId })
+        const { data, total } = await spindle.characters.list({ limit, offset, ...getOpts(userId) })
         allChars.push(...data)
         if (data.length < limit || allChars.length >= total) break
         offset += limit
@@ -101,15 +104,15 @@ spindle.onFrontendMessage(async (payload: any, userId: string) => {
     try {
       let charId: string | null = null
 
-      if (payload.routeType === 'characters' && payload.routeId) {
+      if (payload.routeType === 'characters' && typeof payload.routeId === 'string' && payload.routeId) {
         charId = payload.routeId
-      } else if (payload.routeType === 'chat' && payload.routeId && spindle.permissions.has('chats')) {
-        const chat = await spindle.chats.get(payload.routeId, { userId })
+      } else if (payload.routeType === 'chat' && typeof payload.routeId === 'string' && payload.routeId && spindle.permissions.has('chats')) {
+        const chat = await spindle.chats.get(payload.routeId, getOpts(userId))
         charId = chat?.character_id || null
       }
 
       if (!charId && spindle.permissions.has('chats')) {
-        const activeChat = await spindle.chats.getActive({ userId })
+        const activeChat = await spindle.chats.getActive(getOpts(userId))
         charId = activeChat?.character_id || null
       }
 
@@ -128,14 +131,20 @@ spindle.onFrontendMessage(async (payload: any, userId: string) => {
       sendError('Characters permission is required to save versions.')
       return
     }
+    if (!payload?.characterId || typeof payload.characterId !== 'string') {
+      sendError('Valid Character ID is required.')
+      return
+    }
+    if (!payload?.category || typeof payload.category !== 'string') {
+      sendError('Category is required.')
+      return
+    }
+
     try {
-      const char = await spindle.characters.get(payload.characterId, { userId })
+      const char = await spindle.characters.get(payload.characterId, getOpts(userId))
       if (!char) { sendError('Character not found'); return }
 
-      // Defensive: frontend textareas can return undefined instead of ''
       const text = typeof payload.text === 'string' ? payload.text : String(payload.text ?? '')
-
-      // Build clean variants map from existing data
       const existingRewriter = char.extensions?.['char_rewriter']
       const variants: Record<string, string[]> = {}
 
@@ -152,14 +161,11 @@ spindle.onFrontendMessage(async (payload: any, userId: string) => {
         variants[payload.category].push(text)
       }
 
-      // Build full extensions object, preserving other extension keys
       const extensions = sanitize(char.extensions || {})
       extensions['char_rewriter'] = sanitize({ variants })
 
       const updatePayload = sanitize({ extensions })
-      spindle.log.info(`[save_version] updatePayload: ${JSON.stringify(updatePayload)}`)
-
-      await spindle.characters.update(payload.characterId, updatePayload, { userId })
+      await spindle.characters.update(payload.characterId, updatePayload, getOpts(userId))
 
       spindle.sendToFrontend({
         type: 'version_saved',
@@ -181,8 +187,17 @@ spindle.onFrontendMessage(async (payload: any, userId: string) => {
       sendError('Characters permission is required to delete versions.')
       return
     }
+    if (!payload?.characterId || typeof payload.characterId !== 'string') {
+      sendError('Valid Character ID is required.')
+      return
+    }
+    if (!payload?.category || typeof payload.category !== 'string') {
+      sendError('Category is required.')
+      return
+    }
+
     try {
-      const char = await spindle.characters.get(payload.characterId, { userId })
+      const char = await spindle.characters.get(payload.characterId, getOpts(userId))
       if (!char) { sendError('Character not found'); return }
 
       const extensions = sanitize(char.extensions || {})
@@ -194,9 +209,7 @@ spindle.onFrontendMessage(async (payload: any, userId: string) => {
         extensions['char_rewriter'] = sanitize(rewriter)
 
         const updatePayload = sanitize({ extensions })
-        spindle.log.info(`[delete_version] updatePayload: ${JSON.stringify(updatePayload)}`)
-
-        await spindle.characters.update(payload.characterId, updatePayload, { userId })
+        await spindle.characters.update(payload.characterId, updatePayload, getOpts(userId))
       }
 
       spindle.sendToFrontend({
@@ -219,12 +232,21 @@ spindle.onFrontendMessage(async (payload: any, userId: string) => {
       sendError('Characters permission is required to apply versions.')
       return
     }
+    if (!payload?.characterId || typeof payload.characterId !== 'string') {
+      sendError('Valid Character ID is required.')
+      return
+    }
+    if (!payload?.category || typeof payload.category !== 'string') {
+      sendError('Category is required.')
+      return
+    }
+
     try {
       const text = typeof payload.text === 'string' ? payload.text : String(payload.text ?? '')
       let updatePayload: any = {}
 
       if (payload.category.startsWith('alt_greeting_')) {
-        const char = await spindle.characters.get(payload.characterId, { userId })
+        const char = await spindle.characters.get(payload.characterId, getOpts(userId))
         if (!char) { sendError('Character not found'); return }
 
         const altGreetings = toStringArray(char.alternate_greetings)
@@ -240,9 +262,7 @@ spindle.onFrontendMessage(async (payload: any, userId: string) => {
       }
 
       const finalPayload = sanitize(updatePayload)
-      spindle.log.info(`[apply_version] finalPayload: ${JSON.stringify(finalPayload)}`)
-
-      await spindle.characters.update(payload.characterId, finalPayload, { userId })
+      await spindle.characters.update(payload.characterId, finalPayload, getOpts(userId))
 
       spindle.sendToFrontend({
         type: 'version_applied',
@@ -265,22 +285,25 @@ spindle.onFrontendMessage(async (payload: any, userId: string) => {
       return
     }
 
+    const key = userId || 'default'
     const controller = new AbortController()
-    activeGenerations.set(userId, controller)
+    activeGenerations.set(key, controller)
 
     try {
-      const prompts = await spindle.userStorage.getJson('prompts.json', { fallback: DEFAULT_PROMPTS, userId })
-      const promptCat = payload.category.startsWith('alt_greeting_') ? 'first_mes' : payload.category
-      const sysPrompt = `${prompts.base}\n\nCategory guidance:\n${prompts[promptCat] || ""}`
+      const prompts = await spindle.userStorage.getJson('prompts.json', { fallback: DEFAULT_PROMPTS, ...getOpts(userId) })
+      const promptCat = payload.category?.startsWith('alt_greeting_') ? 'first_mes' : (payload.category || 'description')
+      const sysPrompt = `${prompts.base || ""}\n\nCategory guidance:\n${prompts[promptCat] || ""}`
 
-      for await (const chunk of (spindle.generate.quietStream as any)({
+      const genPayload: any = {
         messages: [
           { role: 'system', content: sysPrompt },
-          { role: 'user', content: `Original Text:\n${payload.originalText}` }
+          { role: 'user', content: `Original Text:\n${payload.originalText || ""}` }
         ],
-        signal: controller.signal,
-        userId
-      })) {
+        signal: controller.signal
+      }
+      if (userId) genPayload.userId = userId
+
+      for await (const chunk of (spindle.generate.quietStream as any)(genPayload)) {
         if (chunk.type === 'token') {
           spindle.sendToFrontend({ type: 'generate_token', token: chunk.token }, userId)
         } else if (chunk.type === 'done') {
@@ -291,16 +314,17 @@ spindle.onFrontendMessage(async (payload: any, userId: string) => {
       if (err?.name === 'AbortError') {
         spindle.sendToFrontend({ type: 'generate_cancelled' }, userId)
       } else {
-        spindle.toast.error(`Generation failed: ${err.message}`)
+        spindle.toast.error(`Generation failed: ${err?.message || err}`)
         spindle.sendToFrontend({ type: 'generate_failed', error: err?.message || String(err) }, userId)
       }
     } finally {
-      activeGenerations.delete(userId)
+      activeGenerations.delete(key)
     }
   }
 
   else if (payload.type === 'generate_cancel') {
-    const controller = activeGenerations.get(userId)
+    const key = userId || 'default'
+    const controller = activeGenerations.get(key)
     if (controller) controller.abort()
   }
 })
