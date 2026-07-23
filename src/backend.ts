@@ -1,199 +1,132 @@
 declare const spindle: import('lumiverse-spindle-types').SpindleAPI
 
-interface SavedPrompt {
-  id: string
-  title: string
-  prompt: string
+interface PromptsConfig {
+  base: string
 }
 
-interface SavedVersion {
-  id: string
-  characterId: string
-  field: string
-  text: string
-  promptUsed: string
-  createdAt: string
+const DEFAULT_PROMPTS: PromptsConfig = {
+  base: `You are an expert creative roleplay writer and character developer. Your goal is to rewrite, refine, or expand the given character field according to the character's core identity. Output ONLY the rewritten text for the requested category. Do not include introductory notes, markdown wrappers, or conversational meta-commentary.`
 }
 
-// Helpers for operator-scoped user storage
-async function loadUserData<T>(filename: string, userId: string, defaultValue: T): Promise<T> {
+const activeGenerations = new Map<string, { cancel: () => void }>()
+
+async function getSavedPrompts(userId: string): Promise<PromptsConfig> {
   try {
-    const data = await spindle.userStorage.readJson<T>(filename, userId)
-    return data ?? defaultValue
+    const data = await spindle.userStorage.readJson<PromptsConfig>('prompts.json', userId)
+    return { ...DEFAULT_PROMPTS, ...data }
   } catch {
-    return defaultValue
+    return DEFAULT_PROMPTS
   }
 }
 
-async function saveUserData<T>(filename: string, data: T, userId: string): Promise<void> {
-  await spindle.userStorage.writeJson(filename, data, userId)
+async function saveSavedPrompts(prompts: PromptsConfig, userId: string): Promise<void> {
+  await spindle.userStorage.writeJson('prompts.json', prompts, userId)
 }
 
-// Frontend Message Router
 spindle.onFrontendMessage(async (payload: any, userId: string) => {
   if (!userId) return
 
   switch (payload?.type) {
-    // 1. List all character cards
-    case 'get_characters': {
+    case 'get_status': {
       try {
-        const characters = await spindle.characters.list({ limit: 200 })
-        spindle.sendToFrontend({ type: 'characters_list', characters }, userId)
+        const prompts = await getSavedPrompts(userId)
+        const hasGenPermission = spindle.permissions ? spindle.permissions.has('generation') : true
+
+        spindle.sendToFrontend({
+          type: 'status_result',
+          hasGeneration: hasGenPermission,
+          prompts
+        }, userId)
       } catch (err: any) {
-        spindle.sendToFrontend({ type: 'error', message: `Failed to load characters: ${err.message}` }, userId)
+        spindle.sendToFrontend({
+          type: 'status_error',
+          error: err.message || 'Failed to initialize backend status'
+        }, userId)
       }
       break
     }
 
-    // 2. Fetch stored prompts and saved field versions
-    case 'get_initial_data': {
+    case 'save_prompts': {
       try {
-        const prompts = await loadUserData<SavedPrompt[]>('prompts.json', userId, [])
-        const versions = await loadUserData<SavedVersion[]>('versions.json', userId, [])
-        spindle.sendToFrontend({ type: 'initial_data', prompts, versions }, userId)
+        const prompts = payload.prompts || DEFAULT_PROMPTS
+        await saveSavedPrompts(prompts, userId)
+        spindle.sendToFrontend({
+          type: 'prompts_updated',
+          prompts
+        }, userId)
       } catch (err: any) {
-        spindle.sendToFrontend({ type: 'error', message: err.message }, userId)
+        spindle.sendToFrontend({
+          type: 'status_error',
+          error: `Failed to save instructions: ${err.message}`
+        }, userId)
       }
       break
     }
 
-    // 3. Save a custom AI Prompt Template
-    case 'save_prompt_template': {
+    case 'generate': {
       try {
-        const prompts = await loadUserData<SavedPrompt[]>('prompts.json', userId, [])
-        const newPrompt: SavedPrompt = {
-          id: crypto.randomUUID(),
-          title: payload.title,
-          prompt: payload.prompt,
+        const prompts = await getSavedPrompts(userId)
+        const { category, originalText, customPrompt } = payload
+
+        if (activeGenerations.has(userId)) {
+          activeGenerations.get(userId)?.cancel()
+          activeGenerations.delete(userId)
         }
-        prompts.push(newPrompt)
-        await saveUserData('prompts.json', prompts, userId)
-        spindle.sendToFrontend({ type: 'prompts_updated', prompts }, userId)
-      } catch (err: any) {
-        spindle.sendToFrontend({ type: 'error', message: `Failed to save prompt: ${err.message}` }, userId)
-      }
-      break
-    }
 
-    // 4. Delete a saved prompt template
-    case 'delete_prompt_template': {
-      try {
-        let prompts = await loadUserData<SavedPrompt[]>('prompts.json', userId, [])
-        prompts = prompts.filter((p) => p.id !== payload.id)
-        await saveUserData('prompts.json', prompts, userId)
-        spindle.sendToFrontend({ type: 'prompts_updated', prompts }, userId)
-      } catch (err: any) {
-        spindle.sendToFrontend({ type: 'error', message: err.message }, userId)
-      }
-      break
-    }
+        let isCancelled = false
+        const cancelHandler = () => { isCancelled = true }
+        activeGenerations.set(userId, { cancel: cancelHandler })
 
-    // 5. Send Prompt + Characteristic to AI for Rewrite
-    case 'generate_rewrite': {
-      try {
-        const { characterName, fieldLabel, currentValue, instructions } = payload
+        const systemMessage = customPrompt || prompts.base || DEFAULT_PROMPTS.base
+        const userPrompt = `Category to Rewrite: ${category.toUpperCase()}\n\n--- Current Content ---\n${originalText || '(Empty)'}\n\nPlease provide an improved, highly engaging rewrite for this category.`
 
-        const systemMessage = `You are a master creative writer, roleplay author, and character designer. 
-Your task is to rewrite or refine a specific field of a character card based strictly on the user's instructions.
-Output ONLY the rewritten text for the field. Do not include introductory notes, markdown codeblock wrappers, or meta-commentary.`
+        let accumulated = ''
 
-        const userMessage = `Character Name: ${characterName}
-Field to Edit: ${fieldLabel}
-
---- Original Field Content ---
-${currentValue || '(Empty)'}
-
---- Instruction / Prompt ---
-${instructions}`
-
-        const result = await spindle.generate.raw({
-          messages: [
-            { role: 'system', content: systemMessage },
-            { role: 'user', content: userMessage },
-          ],
-          parameters: {
-            temperature: 0.75,
-            max_tokens: 2048,
+        await spindle.generate.stream(
+          {
+            messages: [
+              { role: 'system', content: systemMessage },
+              { role: 'user', content: userPrompt }
+            ],
+            parameters: {
+              temperature: 0.75,
+              max_tokens: 2048
+            }
           },
-        })
-
-        const generatedText = (result.content || '').trim()
-        spindle.sendToFrontend({ type: 'rewrite_generated', text: generatedText }, userId)
-      } catch (err: any) {
-        spindle.sendToFrontend({ type: 'error', message: `AI Generation failed: ${err.message}` }, userId)
-      }
-      break
-    }
-
-    // 6. Save rewrite as a persistent version
-    case 'save_version': {
-      try {
-        const versions = await loadUserData<SavedVersion[]>('versions.json', userId, [])
-        const newVersion: SavedVersion = {
-          id: crypto.randomUUID(),
-          characterId: payload.characterId,
-          field: payload.field,
-          text: payload.text,
-          promptUsed: payload.promptUsed,
-          createdAt: new Date().toISOString(),
-        }
-        versions.unshift(newVersion)
-        await saveUserData('versions.json', versions, userId)
-        spindle.sendToFrontend({ type: 'versions_updated', versions }, userId)
-      } catch (err: any) {
-        spindle.sendToFrontend({ type: 'error', message: `Failed to save version: ${err.message}` }, userId)
-      }
-      break
-    }
-
-    // 7. Delete a saved version
-    case 'delete_version': {
-      try {
-        let versions = await loadUserData<SavedVersion[]>('versions.json', userId, [])
-        versions = versions.filter((v) => v.id !== payload.id)
-        await saveUserData('versions.json', versions, userId)
-        spindle.sendToFrontend({ type: 'versions_updated', versions }, userId)
-      } catch (err: any) {
-        spindle.sendToFrontend({ type: 'error', message: err.message }, userId)
-      }
-      break
-    }
-
-    // 8. Apply saved version directly to original character card
-    case 'apply_to_card': {
-      try {
-        const { characterId, field, newText } = payload
-        const char = await spindle.characters.get(characterId)
-        if (!char) {
-          throw new Error('Character not found')
-        }
-
-        const updatePayload: Record<string, any> = {}
-
-        if (field === 'alternate_greetings') {
-          // Handle alternate greetings (array of strings)
-          const existing = char.alternate_greetings || []
-          updatePayload.alternate_greetings = Array.isArray(newText)
-            ? newText
-            : [newText, ...existing]
-        } else {
-          updatePayload[field] = newText
-        }
-
-        const updatedChar = await spindle.characters.update(characterId, updatePayload)
-        
-        // Refresh character list for frontend
-        const characters = await spindle.characters.list({ limit: 200 })
-        spindle.sendToFrontend(
-          { type: 'card_applied_success', updatedChar, characters, field },
-          userId
+          (token: string) => {
+            if (isCancelled) return false
+            accumulated += token
+            spindle.sendToFrontend({ type: 'generate_token', token }, userId)
+            return true
+          }
         )
+
+        activeGenerations.delete(userId)
+
+        if (isCancelled) {
+          spindle.sendToFrontend({ type: 'generate_cancelled' }, userId)
+        } else {
+          spindle.sendToFrontend({ type: 'generate_done', result: accumulated }, userId)
+        }
       } catch (err: any) {
-        spindle.sendToFrontend({ type: 'error', message: `Failed to update character card: ${err.message}` }, userId)
+        activeGenerations.delete(userId)
+        spindle.sendToFrontend({
+          type: 'generate_failed',
+          error: err.message || 'Generation failed'
+        }, userId)
       }
+      break
+    }
+
+    case 'generate_cancel': {
+      if (activeGenerations.has(userId)) {
+        activeGenerations.get(userId)?.cancel()
+        activeGenerations.delete(userId)
+      }
+      spindle.sendToFrontend({ type: 'generate_cancelled' }, userId)
       break
     }
   }
 })
 
-spindle.log.info('Character AI Rewriter (Operator Extension) initialized.')
+spindle.log.info('AI Character Rewriter backend initialized.')
