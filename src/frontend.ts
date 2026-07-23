@@ -1,11 +1,14 @@
 import type { SpindleFrontendContext } from 'lumiverse-spindle-types'
 
 export function setup(ctx: SpindleFrontendContext) {
-  // 1. Register Drawer Tab in Lumiverse sidebar
+  // 1. Register Drawer Tab with explicit SVG Icon & shortName
   const drawerTab = ctx.ui.registerDrawerTab({
     id: 'character-ai-rewriter',
     title: 'AI Character Rewriter',
-    icon: 'edit',
+    shortName: 'Rewriter',
+    description: 'Rewrite character card fields with custom AI prompts and save version history',
+    // 20x20 inline SVG icon for the ViewportDrawer sidebar
+    iconSvg: `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>`,
   })
 
   // 2. Inject Lumiverse-native styling
@@ -30,7 +33,7 @@ export function setup(ctx: SpindleFrontendContext) {
       gap: 12px;
     }
     .car-title {
-      font-size: 14px;
+      font-size: 13px;
       font-weight: 600;
       color: var(--lumiverse-text, #f8fafc);
       text-transform: uppercase;
@@ -66,7 +69,7 @@ export function setup(ctx: SpindleFrontendContext) {
       box-sizing: border-box;
     }
     .car-textarea {
-      min-height: 110px;
+      min-height: 100px;
       resize: vertical;
       font-family: monospace;
       line-height: 1.4;
@@ -93,12 +96,8 @@ export function setup(ctx: SpindleFrontendContext) {
       color: var(--lumiverse-text, #e2e8f0);
       border: 1px solid var(--lumiverse-border, rgba(255, 255, 255, 0.15));
     }
-    .car-btn-success {
-      background: #10b981;
-    }
-    .car-btn-danger {
-      background: #ef4444;
-    }
+    .car-btn-success { background: #10b981; }
+    .car-btn-danger { background: #ef4444; }
     .car-version-item {
       background: var(--lumiverse-fill, #0f172a);
       border: 1px solid var(--lumiverse-border, rgba(255, 255, 255, 0.1));
@@ -118,7 +117,7 @@ export function setup(ctx: SpindleFrontendContext) {
     }
     .car-status {
       font-size: 12px;
-      padding: 8px;
+      padding: 8px 12px;
       border-radius: 6px;
       display: none;
     }
@@ -133,7 +132,7 @@ export function setup(ctx: SpindleFrontendContext) {
 
       <!-- Character & Field Selector Card -->
       <div class="car-card">
-        <div class="car-title">1. Select Character & Characteristic</div>
+        <div class="car-title">1. Select Character & Field</div>
         <div class="car-row">
           <div class="car-field-group">
             <label class="car-label">Character Card</label>
@@ -142,7 +141,7 @@ export function setup(ctx: SpindleFrontendContext) {
             </select>
           </div>
           <div class="car-field-group">
-            <label class="car-label">Characteristic Field</label>
+            <label class="car-label">Field / Characteristic</label>
             <select id="car-field-select" class="car-select">
               <option value="description">Description</option>
               <option value="personality">Personality</option>
@@ -155,55 +154,53 @@ export function setup(ctx: SpindleFrontendContext) {
         </div>
 
         <div class="car-field-group">
-          <label class="car-label">Original Content Preview</label>
-          <textarea id="car-original-text" class="car-textarea" readonly placeholder="Select a character to view field content..."></textarea>
+          <label class="car-label">Current Content</label>
+          <textarea id="car-original-text" class="car-textarea" readonly placeholder="Select a character card to view field content..."></textarea>
         </div>
       </div>
 
       <!-- AI Prompt & Generation Card -->
       <div class="car-card">
-        <div class="car-title">2. AI Rewrite Prompt</div>
-        
+        <div class="car-title">2. AI Prompt</div>
         <div class="car-row">
           <div class="car-field-group">
-            <label class="car-label">Load Saved Prompt Template</label>
+            <label class="car-label">Saved Prompt Template</label>
             <div class="car-row">
               <select id="car-prompt-select" class="car-select" style="flex: 1;">
                 <option value="">-- Custom Prompt --</option>
               </select>
-              <button id="car-btn-del-prompt" class="car-btn car-btn-danger" title="Delete Saved Prompt" style="display:none;">✕</button>
+              <button id="car-btn-del-prompt" class="car-btn car-btn-danger" title="Delete Saved Prompt" style="display:none; padding: 6px 10px;">✕</button>
             </div>
           </div>
         </div>
 
         <div class="car-field-group">
-          <label class="car-label">Instruction / Prompt for AI</label>
-          <textarea id="car-prompt-text" class="car-textarea" placeholder="e.g. Rewrite this description to be more dramatic, expanding on physical features and sensory details..."></textarea>
+          <label class="car-label">Instruction for AI</label>
+          <textarea id="car-prompt-text" class="car-textarea" placeholder="e.g. Rewrite this description to be more dramatic, detailed, and focus on physical presence..."></textarea>
         </div>
 
         <div class="car-row">
           <button id="car-btn-generate" class="car-btn">
             <span>✨ Generate AI Rewrite</span>
           </button>
-          
           <button id="car-btn-save-prompt" class="car-btn car-btn-secondary">
             <span>💾 Save Prompt Template</span>
           </button>
         </div>
       </div>
 
-      <!-- AI Result & Action Card -->
+      <!-- AI Result Preview -->
       <div class="car-card" id="car-result-card" style="display: none;">
-        <div class="car-title">3. Generated Result Preview</div>
+        <div class="car-title">3. Generated Output</div>
         <div class="car-field-group">
-          <textarea id="car-result-text" class="car-textarea" style="min-height: 140px;"></textarea>
+          <textarea id="car-result-text" class="car-textarea" style="min-height: 130px;"></textarea>
         </div>
         <div class="car-row">
           <button id="car-btn-save-ver" class="car-btn car-btn-secondary">
             📌 Save as New Version
           </button>
           <button id="car-btn-apply-card" class="car-btn car-btn-success">
-            ⚡ Apply to Original Card
+            ⚡ Apply directly to Card
           </button>
         </div>
       </div>
@@ -225,7 +222,7 @@ export function setup(ctx: SpindleFrontendContext) {
   let currentCharacter: any = null
   let currentGeneratedText: string = ''
 
-  // DOM Handles
+  // DOM Elements
   const statusEl = drawerTab.root.querySelector('#car-status') as HTMLElement
   const charSelect = drawerTab.root.querySelector('#car-char-select') as HTMLSelectElement
   const fieldSelect = drawerTab.root.querySelector('#car-field-select') as HTMLSelectElement
@@ -264,14 +261,14 @@ export function setup(ctx: SpindleFrontendContext) {
 
   function renderVersions() {
     if (!currentCharacter) {
-      versionsList.innerHTML = '<div style="font-size:12px;color:var(--lumiverse-text-muted);">Select a character card above.</div>'
+      versionsList.innerHTML = '<div style="font-size:12px;color:var(--lumiverse-text-muted);">Select a character above.</div>'
       return
     }
     const field = fieldSelect.value
     const charVersions = savedVersions.filter((v) => v.characterId === currentCharacter.id && v.field === field)
 
     if (charVersions.length === 0) {
-      versionsList.innerHTML = `<div style="font-size:12px;color:var(--lumiverse-text-muted);">No saved versions for ${fieldSelect.options[fieldSelect.selectedIndex].text}.</div>`
+      versionsList.innerHTML = `<div style="font-size:12px;color:var(--lumiverse-text-muted);">No saved versions for this field yet.</div>`
       return
     }
 
@@ -320,7 +317,6 @@ export function setup(ctx: SpindleFrontendContext) {
     })
   }
 
-  // Event Listeners
   charSelect.addEventListener('change', () => {
     const charId = charSelect.value
     currentCharacter = characters.find((c) => c.id === charId) || null
@@ -348,7 +344,7 @@ export function setup(ctx: SpindleFrontendContext) {
     }
   })
 
-  btnSavePrompt.addEventListener('click', async () => {
+  btnSavePrompt.addEventListener('click', () => {
     const promptValue = promptText.value.trim()
     if (!promptValue) {
       showStatus('Please write a prompt first.', 'error')
@@ -362,7 +358,7 @@ export function setup(ctx: SpindleFrontendContext) {
 
   btnGenerate.addEventListener('click', () => {
     if (!currentCharacter) {
-      showStatus('Please select a character first.', 'error')
+      showStatus('Please select a character card first.', 'error')
       return
     }
     const instructions = promptText.value.trim()
@@ -385,7 +381,7 @@ export function setup(ctx: SpindleFrontendContext) {
   })
 
   btnSaveVer.addEventListener('click', () => {
-    if (!currentCharacter || !currentGeneratedText) return
+    if (!currentCharacter || !resultText.value) return
     ctx.sendToBackend({
       type: 'save_version',
       characterId: currentCharacter.id,
@@ -406,7 +402,6 @@ export function setup(ctx: SpindleFrontendContext) {
     })
   })
 
-  // Backend Message Receiver
   ctx.onBackendMessage((msg: any) => {
     switch (msg.type) {
       case 'characters_list': {
@@ -473,7 +468,10 @@ export function setup(ctx: SpindleFrontendContext) {
     }
   })
 
-  // Initialize
+  // Request initial data
   ctx.sendToBackend({ type: 'get_characters' })
   ctx.sendToBackend({ type: 'get_initial_data' })
 }
+
+// Default export for maximum compatibility
+export default setup
